@@ -12,7 +12,7 @@ Requires Python 3.11 or newer. No package installation is needed.
 python3 -m services.api.app
 ```
 
-Open `http://127.0.0.1:8765` in a browser. Select **Load sample project**, capture a sample field update, review it, and create an export. The local SQLite database is stored under `data/private/` and ignored by Git. The server binds to localhost by default and has no production authentication; do not expose it publicly.
+Open `http://127.0.0.1:8765` for the interactive introduction, or go to `http://127.0.0.1:8765/app` for the workspace. The introduction previews matching against a synthetic schedule without saving notes. In the workspace, select **Load sample project**, capture a field update, review it, and create an export. The local SQLite database is stored under `data/private/` and ignored by Git. The server binds to localhost by default and has no production authentication; do not expose it publicly.
 
 Run the checks with:
 

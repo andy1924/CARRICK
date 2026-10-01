@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f3f0e7">
+  <meta name="description" content="Carrick connects field progress notes to schedule activities, with a clear review trail for every decision.">
+  <title>Carrick — Make progress visible</title>
+  <link rel="icon" type="image/svg+xml" href="/brand/carrick-mark.svg">
+  <link rel="stylesheet" href="/landing.css">
+  <script src="/landing.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="wordmark" href="/" aria-label="Carrick home"><img src="/brand/carrick-logo.svg" alt="Carrick" width="151" height="33"></a>
+    <nav aria-label="Main navigation"><a href="#how-it-works">How it works</a><a href="#why-carrick">Why Carrick</a><a href="#try-it">Try a note</a></nav>
+    <a class="header-cta" href="/app">Open workspace <span aria-hidden="true">↗</span></a>
+    <button class="menu-toggle" type="button" aria-label="Open menu" aria-controls="mobile-menu" aria-expanded="false"><span></span><span></span></button>
+  </header>
+  <nav id="mobile-menu" class="mobile-menu" aria-label="Mobile navigation" hidden><a href="#how-it-works">How it works</a><a href="#why-carrick">Why Carrick</a><a href="#try-it">Try a note</a><a href="/app">Open workspace ↗</a></nav>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-inner">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="eyebrow-line"></span> FIELD PROGRESS, MADE USEFUL</p>
+          <h1 id="hero-title">The work is moving.<br><em>Is the plan?</em></h1>
+          <p class="hero-lead">A field update should do more than sit in a report. Carrick connects what happened on site to the right schedule activity, with a planner in control of every update.</p>
+          <div class="hero-actions"><a class="button button-dark" href="#try-it">See it in action <span aria-hidden="true">↗</span></a><a class="text-link" href="#how-it-works">Explore the workflow <span aria-hidden="true">↓</span></a></div>
+          <div class="hero-footnote"><span class="footnote-mark">C / 01</span><span>From field note to schedule context.<br>One clear line of evidence.</span></div>
+        </div>
+        <div class="hero-visual" aria-label="A field note connected to a schedule activity">
+          <div class="visual-grid"></div>
+          <div class="visual-topline"><span>FIELD → PLAN</span><span>01 / 03</span></div>
+          <div class="visual-card note-card"><span class="card-index">01 &nbsp; FIELD NOTE</span><p>“North pipeline welding started today.”</p><span class="card-meta"><span class="small-dot"></span> Site update received</span></div>
+          <div class="connector"><span class="connector-line"></span><span class="connector-dot"></span><span class="connector-label">LINKED TO</span></div>
+          <div class="visual-card activity-card"><div class="activity-head"><span class="card-index">02 &nbsp; SCHEDULE ACTIVITY</span><span class="activity-code">PI–301</span></div><p>Weld North Pipeline</p><span class="activity-sub">Piping Works &nbsp;/&nbsp; Synthetic pump station</span><div class="activity-bottom"><span class="review-pill"><span></span> Ready for review</span><span class="activity-arrow">↗</span></div></div>
+          <div class="visual-bottomline"><span>Source stays visible</span><span>Decision stays yours</span></div>
+        </div>
+      </div>
+      <div class="hero-bottom"><span>BUILT FOR THE GAP BETWEEN SITE AND SCHEDULE</span><a href="#how-it-works" aria-label="Scroll to how it works">↓</a></div>
+    </section>
+
+    <section class="statement" id="why-carrick"><div class="section-number">01 / THE GAP</div><div><h2>Real progress is often buried in updates nobody has time to reconcile.</h2><p>Daily notes name places, crews, and tasks. The schedule speaks in activity IDs and dates. Carrick brings the two together, so useful evidence reaches the planner while its context is still fresh.</p></div><div class="statement-aside"><span class="asterisk">✳</span><span>Less chasing.<br>More clarity.</span></div></section>
+
+    <section class="workflow" id="how-it-works" aria-labelledby="workflow-title"><div class="section-intro"><div><p class="eyebrow">THE WORKFLOW</p><h2 id="workflow-title">A clearer path from<br><em>report to record.</em></h2></div><p>Every stage has a purpose. Explore the steps to see how an observation becomes a traceable, approved progress record.</p></div>
+      <div class="workflow-layout"><div class="step-list" role="tablist" aria-label="Workflow stages"><button class="step active" id="step-tab-0" role="tab" aria-selected="true" aria-controls="step-panel" data-step="0"><span class="step-num">01</span><span><strong>Capture what happened</strong><small>Start with the words used on site.</small></span><span class="step-plus" aria-hidden="true">↗</span></button><button class="step" id="step-tab-1" role="tab" aria-selected="false" aria-controls="step-panel" data-step="1" tabindex="-1"><span class="step-num">02</span><span><strong>Find the right activity</strong><small>See candidates and the reason for a match.</small></span><span class="step-plus" aria-hidden="true">↗</span></button><button class="step" id="step-tab-2" role="tab" aria-selected="false" aria-controls="step-panel" data-step="2" tabindex="-1"><span class="step-num">03</span><span><strong>Review the decision</strong><small>Resolve uncertainty before it moves on.</small></span><span class="step-plus" aria-hidden="true">↗</span></button><button class="step" id="step-tab-3" role="tab" aria-selected="false" aria-controls="step-panel" data-step="3" tabindex="-1"><span class="step-num">04</span><span><strong>Export approved progress</strong><small>Keep the source and decision attached.</small></span><span class="step-plus" aria-hidden="true">↗</span></button></div><div class="step-stage" id="step-panel" role="tabpanel" aria-labelledby="step-tab-0" aria-live="polite"><div class="stage-top"><span id="stage-counter">STAGE 01 / 04</span><span class="stage-corner">CARRICK / PROCESS</span></div><div id="stage-visual" class="stage-visual"></div><div class="stage-caption"><span id="stage-kicker">FROM THE FIELD</span><h3 id="stage-title">Keep the language natural.</h3><p id="stage-copy">A supervisor can write a simple progress note. The original wording remains attached to the event.</p></div></div></div>
+    </section>
+
+    <section class="try-section" id="try-it" aria-labelledby="try-title"><div class="try-heading"><div><p class="eyebrow">TRY IT YOURSELF</p><h2 id="try-title">Write it like you would<br><em>on site.</em></h2></div><p>Use this synthetic pump station to see how Carrick reads a note and proposes schedule links. Your preview is not saved.</p></div><div class="try-layout"><div class="try-input"><div class="try-panel-top"><span>FIELD NOTE / LIVE PREVIEW</span><span class="signal"><span></span> READY</span></div><label for="preview-note">What happened?</label><textarea id="preview-note" maxlength="1000" rows="4" spellcheck="true">North pipeline welding started today</textarea><label class="date-label" for="preview-date">Date of the note <span>Used to interpret “today” and “tomorrow”</span></label><input id="preview-date" type="date"><div class="example-prompt"><span>OR TRY</span><div><button type="button" data-note="Finished pouring the main foundation today">Foundation pour</button><button type="button" data-note="Started welding today">Ambiguous update</button><button type="button" data-note="Pump A will finish tomorrow">A forecast</button></div></div><button id="preview-button" class="button button-copper" type="button">Find the schedule link <span aria-hidden="true">↗</span></button><p class="privacy-note">Sample schedule only · No note saved</p></div><div class="try-output" aria-live="polite"><div class="output-top"><span>PROPOSED LINK</span><span id="output-state">01 / READY</span></div><div id="preview-result" class="preview-result"><div class="empty-result"><div class="empty-symbol">↗</div><p>Your note’s schedule connection will appear here.</p><span>Try a note to see the suggestion and any review flags.</span></div></div><div class="output-bottom"><span><span class="small-dot"></span> Transparent suggestions</span><span>Planner review before export</span></div></div></div></section>
+
+    <section class="principles"><div class="principles-top"><span class="section-number">02 / BUILT FOR TRUST</span><h2>Useful answers.<br><em>Visible reasoning.</em></h2></div><div class="principle-grid"><article><span class="principle-icon">◎</span><h3>Know the source</h3><p>Each proposed update stays connected to the field statement that produced it.</p></article><article><span class="principle-icon">⌁</span><h3>See the uncertainty</h3><p>When two activities look plausible or a date is missing, Carrick asks for review.</p></article><article><span class="principle-icon">↗</span><h3>Keep control</h3><p>Approved actuals are exported with a decision trail. The imported schedule stays intact.</p></article></div></section>
+
+    <section class="final-cta"><div class="final-art" aria-hidden="true"><span class="art-circle"></span><span class="art-line one"></span><span class="art-line two"></span><span class="art-cross">+</span></div><div><p class="eyebrow">THE NEXT STEP IS CLEAR</p><h2>Put field progress<br><em>to work.</em></h2><p>Bring a schedule into the workspace, capture an update, and see the review trail take shape.</p><a class="button button-light" href="/app">Open the Carrick workspace <span aria-hidden="true">↗</span></a></div></section>
+  </main>
+  <footer class="site-footer"><a href="/" class="footer-brand"><img src="/brand/carrick-mark.svg" alt="" width="30" height="30"><strong>carrick</strong></a><span>Progress, with a line of sight.</span><a href="/app">Workspace ↗</a><a href="#main">Back to top ↑</a></footer>
+</body>
+</html>

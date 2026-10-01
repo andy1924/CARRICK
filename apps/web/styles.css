@@ -43,6 +43,8 @@ a { color: var(--copper); }
 .badge { margin-left: auto; border: 1px solid #d4ddd2; border-radius: 5px; min-width: 21px; padding: 1px 5px; text-align: center; background: #fff; color: var(--green); font-size: 10px; }
 .side-bottom { display: flex; align-items: center; gap: 9px; border-top: 1px solid #d6ded2; margin-top: auto; padding: 19px 10px 0; font-size: 11px; color: var(--muted); }
 .side-bottom small { margin-left: auto; font: 10px "SFMono-Regular", Consolas, monospace; color: var(--soft); }
+.side-home-link { display: block; color: var(--muted); font-size: 11px; text-decoration: none; margin: 16px 10px 0; }
+.side-home-link:hover { color: var(--ink); text-decoration: underline; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #6d9d75; }
 
 .main { min-width: 0; }
@@ -197,6 +199,7 @@ tr:last-child td { border-bottom: 0; }
   .brand img { width: 31px; height: 31px; }
   .brand strong { font-size: 17px; }
   .side-label, .side-bottom { display: none; }
+  .side-home-link { margin: 9px 0 0; }
   .nav { display: flex; gap: 2px; overflow: auto; }
   .nav-item { flex: none; width: auto; min-height: 33px; padding: 7px 9px; font-size: 11px; border-left: 0; border-bottom: 2px solid transparent; }
   .nav-item.active { border-left: 0; border-bottom-color: var(--copper); }

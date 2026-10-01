@@ -27,6 +27,15 @@ class EngineTests(unittest.TestCase):
         self.assertEqual([event["kind"] for event in events], ["in_progress", "forecast_finish"])
         self.assertTrue(all(route_event(event, [])[0] == "needs_review" for event in events))
 
+    def test_public_preview_uses_sample_without_writing_data(self):
+        result = app.preview_report({"content": "Started welding today"})
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["events"][0]["status"], "needs_review")
+        self.assertEqual({candidate["activity_id"] for candidate in result["events"][0]["candidates"][:2]},
+                         {"PI-301", "PI-302"})
+        with self.assertRaisesRegex(ValueError, "1,000"):
+            app.preview_report({"content": "a" * 1001})
+
 
 class FlowTests(unittest.TestCase):
     def setUp(self):

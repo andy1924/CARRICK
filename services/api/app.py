@@ -296,6 +296,29 @@ def summary() -> dict:
         return {"schedule": schedule, "counts": counts, "recent": recent}
 
 
+def preview_report(payload: dict) -> dict:
+    """Try a note against the bundled synthetic schedule without storing it."""
+    content = payload.get("content", "")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("Enter a field note to preview")
+    if len(content) > 1000:
+        raise ValueError("Preview notes must be 1,000 characters or fewer")
+    event_date = payload.get("event_date", "")
+    if not isinstance(event_date, str):
+        raise ValueError("Preview date must be a date string")
+    if event_date:
+        date.fromisoformat(event_date)
+    fixture = ROOT / "data" / "samples" / "pump-station.xer"
+    activities, _, _ = parse_schedule(fixture.read_text(), fixture.name)
+    events = []
+    for event in extract_events(content.strip(), event_date, "", "")[:5]:
+        candidates = rank_activities(event, activities, limit=3)
+        status, warnings = route_event(event, candidates)
+        events.append({**event, "status": status, "warnings": warnings,
+                       "candidates": candidates})
+    return {"events": events, "schedule": "Synthetic pump station", "saved": False}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         print("%s %s" % (self.address_string(), format % args))
@@ -348,7 +371,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 return self.wfile.write(body)
-            static = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
+            static = {"/": ("landing.html", "text/html"),
+                      "/app": ("index.html", "text/html"), "/app/": ("index.html", "text/html"),
+                      "/landing.js": ("landing.js", "text/javascript"),
+                      "/landing.css": ("landing.css", "text/css"),
+                      "/app.js": ("app.js", "text/javascript"),
                       "/styles.css": ("styles.css", "text/css"),
                       "/brand/carrick-mark.svg": ("brand/carrick-mark.svg", "image/svg+xml"),
                       "/brand/carrick-logo.svg": ("brand/carrick-logo.svg", "image/svg+xml")}
@@ -368,6 +395,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             payload = self.read_json()
+            if path == "/api/preview":
+                return self.respond(200, preview_report(payload))
             if path == "/api/schedules/import":
                 return self.respond(201, import_schedule(payload.get("filename", ""), payload.get("content", "")))
             if path == "/api/reports":
