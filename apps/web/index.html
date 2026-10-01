@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17352f">
+  <title>Carrick · Progress desk</title>
+  <link rel="icon" type="image/svg+xml" href="/brand/carrick-mark.svg">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><img src="/brand/carrick-mark.svg" alt="" width="38" height="38"><span><strong>Carrick</strong><small>Site progress</small></span></div>
+      <div class="side-label">PROJECT WORKSPACE</div>
+      <nav class="nav" aria-label="Main navigation">
+        <button class="nav-item active" data-view="overview"><span class="nav-number">01</span> Progress desk</button>
+        <button class="nav-item" data-view="capture"><span class="nav-number">02</span> New report</button>
+        <button class="nav-item" data-view="review"><span class="nav-number">03</span> Review queue <span id="review-badge" class="badge" hidden>0</span></button>
+        <button class="nav-item" data-view="schedule"><span class="nav-number">04</span> Schedule</button>
+        <button class="nav-item" data-view="history"><span class="nav-number">05</span> Event log</button>
+        <button class="nav-item" data-view="exports"><span class="nav-number">06</span> Exports</button>
+      </nav>
+      <div class="side-bottom"><span class="status-dot"></span><span>Local workspace</span><small>v0.1</small></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="breadcrumb">Carrick <span>/</span> <strong id="breadcrumb">Progress desk</strong></div>
+        <div class="top-actions"><span id="schedule-chip" class="schedule-chip">No schedule loaded</span></div>
+      </header>
+
+      <div class="content">
+        <section id="view-overview" class="view active">
+          <div class="page-heading"><div><p class="eyebrow">WORKBENCH <span>01 / 06</span></p><h1>Progress desk</h1><p class="lead">Reports, review decisions, and approved actuals for the current schedule.</p></div><button class="button primary" data-goto="capture">New field report <span aria-hidden="true">↗</span></button></div>
+          <div id="welcome" class="welcome panel"><div><p class="eyebrow">GET STARTED</p><h2>Bring in a schedule</h2><p>Use the synthetic project to explore Carrick, or import your own schedule from the Schedule page.</p></div><button id="load-demo" class="button primary">Load sample project</button></div>
+          <div id="metrics" class="metric-grid"></div>
+          <div class="two-col overview-grid"><div class="panel"><div class="panel-heading"><div><p class="eyebrow">LATEST RECORDS</p><h2>Recent field events</h2></div><button class="text-button" data-goto="history">Open event log <span aria-hidden="true">↗</span></button></div><div id="recent-events" class="event-list"></div></div><div class="panel next-panel"><p class="eyebrow">NEXT ACTION</p><h2 id="work-queue-title">Review the queue</h2><p id="work-queue-copy" class="muted"></p><button id="work-queue-action" class="text-button" data-goto="review">Open review queue <span aria-hidden="true">↗</span></button><div class="next-rule"></div><p class="small-note">Only approved events are included in exports. The imported schedule remains unchanged.</p></div></div>
+        </section>
+
+        <section id="view-capture" class="view">
+          <div class="page-heading"><div><p class="eyebrow">FIELD INPUT <span>02 / 06</span></p><h1>New field report</h1><p class="lead">Describe the work as it happened. Carrick will suggest the matching activities.</p></div></div>
+          <div class="two-col capture-layout"><div class="panel form-panel"><div class="panel-heading"><div><p class="eyebrow">REPORT DETAILS</p><h2>What changed on site?</h2></div></div><form id="report-form"><label>Field note<textarea id="report-text" rows="6" placeholder="For example: Finished pouring the main foundation today; started welding on the north pipeline."></textarea></label><div class="form-grid"><label>Event date<input id="report-date" type="date"></label><label>Discipline<input id="report-discipline" placeholder="Civil, piping, electrical…"></label></div><label>Location or area<input id="report-location" placeholder="North pipeline, Pump A…"></label><div class="form-note">Enter a date when the note does not state one. Leave it blank if the actual date is unknown.</div><button class="button primary wide" type="submit">Find schedule activities <span aria-hidden="true">↗</span></button></form></div><div class="stack"><div class="side-panel"><p class="eyebrow">MULTIPLE REPORTS</p><h2>Import a field log</h2><p class="muted">Use a CSV with <code>report_text</code>. Optional columns: <code>event_date</code>, <code>discipline</code>, <code>location</code>.</p><input id="spreadsheet-file" type="file" accept=".csv,text/csv" hidden><button id="upload-spreadsheet" class="button secondary">Choose CSV file</button></div><div class="side-panel examples-panel"><p class="eyebrow">EXAMPLE NOTES</p><div class="example-list"><button class="example" data-example="Finished pouring the main foundation today" data-location="main">Foundation pour <span>Use note ↗</span></button><button class="example" data-example="Started welding today" data-location="">Ambiguous welding <span>Use note ↗</span></button><button class="example" data-example="North pipeline welding started today" data-location="north">Located activity <span>Use note ↗</span></button></div></div></div></div><div id="capture-result"></div>
+        </section>
+
+        <section id="view-review" class="view"><div class="page-heading"><div><p class="eyebrow">DECISIONS <span>03 / 06</span></p><h1>Review queue</h1><p class="lead">Verify the schedule link and date. Only approved actuals enter an export.</p></div></div><div id="review-list" class="review-list"></div></section>
+
+        <section id="view-schedule" class="view"><div class="page-heading"><div><p class="eyebrow">PLAN CONTEXT <span>04 / 06</span></p><h1>Schedule</h1><p class="lead">Search the imported activity list. Original schedule data is read-only.</p></div></div><div class="panel"><div class="panel-heading"><div><p class="eyebrow">CURRENT VERSION</p><h2 id="schedule-title">No schedule loaded</h2><p id="schedule-meta" class="muted"></p></div><div><input id="schedule-file" type="file" accept=".xer,.csv,text/plain,text/csv" hidden><button id="import-schedule" class="button secondary">Import schedule</button></div></div><div class="search-wrap"><input id="schedule-search" type="search" placeholder="Search activity ID, name, or WBS"></div><div class="table-scroll"><table><thead><tr><th>Activity</th><th>Work breakdown</th><th>Planned start</th><th>Planned finish</th><th>Status</th></tr></thead><tbody id="schedule-rows"></tbody></table></div></div></section>
+
+        <section id="view-history" class="view"><div class="page-heading"><div><p class="eyebrow">SOURCE TRAIL <span>05 / 06</span></p><h1>Event log</h1><p class="lead">Each field statement and its decision remain available for review.</p></div></div><div class="panel"><div id="history-list" class="event-list"></div></div></section>
+
+        <section id="view-exports" class="view"><div class="page-heading"><div><p class="eyebrow">PUBLISH <span>06 / 06</span></p><h1>Exports</h1><p class="lead">Create a traceable dataset from approved field events.</p></div></div><div class="panel export-panel"><div class="export-heading"><div><p class="eyebrow">AVAILABLE FORMAT</p><h2>Approved progress · CSV</h2></div><span class="format-tag">CSV</span></div><p class="muted">Includes activity ID, actual date, discipline, source report, and approval time. The source schedule is not modified.</p><div class="export-bottom"><div id="export-count" class="export-count">0 approved events ready</div><button id="create-export" class="button primary">Create export <span aria-hidden="true">↗</span></button></div><div id="export-result"></div></div></section>
+      </div>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
