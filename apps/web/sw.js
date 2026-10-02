@@ -1,4 +1,4 @@
-const CACHE = "carrick-shell-v1";
+const CACHE = "carrick-shell-v2";
 const ASSETS = ["/app", "/styles.css", "/app.js", "/offline.js", "/capture.js", "/analytics.js", "/manifest.webmanifest", "/brand/carrick-mark.svg"];
 self.addEventListener("install", event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting())));
 self.addEventListener("activate", event => event.waitUntil(

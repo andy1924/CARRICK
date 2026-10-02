@@ -128,7 +128,7 @@ window.CarrickCapture = (() => {
         await app.offline.enqueue(payload);
         app.toast("Reviewed document saved for submission when connected.");
       } else {
-        try { const result = await app.post("/api/reports", payload); app.toast(`${result.events.length} document events ready for planner review.`); }
+        try { const result = await app.post("/api/reports", payload); app.toast(result.duplicate ? "Repeat document retained in its existing source group." : `${result.events.length} document events ready for planner review.`); }
         catch (error) {
           if (error.status === 409) { await app.offline.enqueue(payload, { status: "conflict", error: error.message }); app.toast("Document saved. Review it against the current schedule in Saved on this device."); }
           else { if (!error.transport) throw error; await app.offline.enqueue(payload); app.toast("Reviewed document saved for submission when connected."); }

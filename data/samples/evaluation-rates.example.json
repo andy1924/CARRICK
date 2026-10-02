@@ -1,0 +1,9 @@
+{
+  "as_of": "",
+  "source": "",
+  "currency": "USD",
+  "models": {
+    "your-generation-model": {"input_per_million": null, "cached_input_per_million": null, "output_per_million": null},
+    "your-embedding-model": {"input_per_million": null, "output_per_million": 0}
+  }
+}

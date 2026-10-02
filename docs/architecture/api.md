@@ -19,6 +19,20 @@ This is the target interface, not the current endpoint list. The local prototype
 
 ## Contract rules
 
+### Implemented reliability routes
+
+| Method and path | Result |
+| --- | --- |
+| `GET /api/history` | Parameterized paginated events, grouped sources, possible repeats, and decision trail |
+| `POST /api/events/{id}/checks` | Checks for the currently selected `activity_id` and `event_date`, with `blocked` and `requires_reason` flags |
+| `GET /api/quality/status` | Recent processing latency, failures, usage, duplicate groups, and routing-policy metadata; no inferred accuracy |
+
+History accepts `q`, `activity`, `discipline`, `status`, `date_field` (`event_date`, `received_at`, `decided_at`), `date_from`, `date_to`, `source`, `source_query`, `duplicates` (`all`, `grouped`), `limit` (1–200), and nonnegative `offset`. Ranges are inclusive ISO dates. The response includes `events`, `total`, `limit`, `offset`, `has_more`, and `schedule_version`. Exact repeated reports return `duplicate: true`, `duplicate_of`, `duplicate_group_id`, and the existing canonical events. Decision responses can return status `duplicate`. Export consolidation can return HTTP 200 with `id: null` and no download; a new export returns HTTP 201.
+
+Read the [reliability contracts and limitations](../quality/reliability-and-calibration.md) for identities, checks, cohort restrictions, and migration behavior.
+
+### Target shared-deployment contracts
+
 - Upload requests carry a project ID, schedule version where applicable, reporter identity, report timestamp, and timezone.
 - Mutating requests accept an idempotency key. Retries return the prior result for the same key and payload.
 - Review decisions require the expected proposal version to prevent two planners from approving stale values.

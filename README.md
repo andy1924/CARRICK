@@ -50,6 +50,12 @@ See [capture and offline setup](docs/architecture/capture-offline-analytics.md) 
 
 Restart the Python server after updating these files so new endpoints and database migrations load. No tests, browser automation, model downloads, or inference were run for these additions.
 
+## Report reliability and evaluation
+
+Exact repeat reports retain their sources in one group without repeat inference. Similar wording is flagged for review. Date conflicts, competing claims, all four dependency types, lags, missing actuals, graph cycles, and stale schedule decisions are checked again before approval/export. Progress history adds activity, discipline, status, date, and source filters, pagination, grouped source evidence, and decision details.
+
+The repository includes independent-label export, accuracy/coverage/latency/cost evaluation, and guarded routing-policy calibration. These tools have not been run for this change; no production performance or calibrated-threshold result is claimed. A larger independently reviewed dataset is still required. See [reliability and calibration setup](docs/quality/reliability-and-calibration.md). `.env.example` adds optional `CARRICK_ROUTING_POLICY`; leave it blank until a validated artifact exists. Restart the local API to apply the additive schema changes.
+
 ## Intended product loop
 
 1. Import a versioned schedule and index its activities, WBS, locations, and relationships.

@@ -2,6 +2,8 @@
 
 This document is the target model. The local prototype currently stores schedule versions, activities, relationships, reports, events, audit records, and exports in SQLite. Candidate lists, warning lists, and the selected activity are held on each event record; separate proposal and decision tables are planned for shared deployment.
 
+Implemented reliability additions store report `fingerprint`, normalized text/context, ordered corrected `input_rows`, `duplicate_of`, and `duplicate_group_id`; separate `report_similarities` retain review-only comparisons. Events add structured `checks`, routing-policy metadata, and `duplicate_of_event`. `processing_runs` retain content-free operation latency, queue time, failures and model usage. The `duplicate` event status marks consolidated actuals that must not be exported again. Exact repeated reports share canonical events and keep every source receipt. Historical fingerprints/input rows are not invented during migration. See [reliability and calibration](../quality/reliability-and-calibration.md).
+
 ## Core records
 
 | Record | Important fields | Purpose |

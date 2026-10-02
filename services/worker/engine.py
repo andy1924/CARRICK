@@ -7,6 +7,7 @@ import io
 import re
 from datetime import date, timedelta
 from difflib import SequenceMatcher
+from services.worker.routing import routing_details
 
 
 ALIASES = {
@@ -84,11 +85,11 @@ def parse_xer(content: str) -> tuple[list[dict], list[dict], str]:
     # external TASK IDs shown to planners before storing relationship context.
     task_codes = {a["source_key"]: a["external_id"] for a in activities}
     relationships = [{
-        "predecessor": task_codes.get(r.get("pred_task_id", ""), ""),
-        "successor": task_codes.get(r.get("task_id", ""), ""),
+        "predecessor": task_codes.get(r.get("pred_task_id", ""), "unresolved-task:"+r.get("pred_task_id", "")),
+        "successor": task_codes.get(r.get("task_id", ""), "unresolved-task:"+r.get("task_id", "")),
         "kind": r.get("pred_type", "FS"),
         "lag": r.get("lag_hr_cnt", "0"),
-    } for r in tables.get("TASKPRED", []) if r.get("pred_task_id") in task_codes and r.get("task_id") in task_codes]
+    } for r in tables.get("TASKPRED", []) if r.get("pred_task_id") and r.get("task_id")]
     _check_unique(activities)
     return activities, relationships, "xer"
 
@@ -192,13 +193,14 @@ def rank_activities(event: dict, activities: list[dict], limit: int = 5) -> list
 
 
 def route_event(event: dict, candidates: list[dict]) -> tuple[str, list[str]]:
+    routing = routing_details(candidates)
     warnings = []
     if event["kind"] not in {"actual_start", "actual_finish"}:
         warnings.append("Event does not set an actual date")
     if not event["event_date"] and event["kind"] in {"actual_start", "actual_finish"}:
         warnings.append("Actual date is missing")
-    if len(candidates) > 1 and candidates[0]["score"] - candidates[1]["score"] < 0.12:
+    if len(candidates) > 1 and routing["margin"] < routing["min_margin"]:
         warnings.append("Several activities are plausible")
-    elif not candidates or candidates[0]["score"] < 0.38:
+    if not candidates or candidates[0]["score"] < routing["min_score"]:
         warnings.append("No reliable activity match")
     return ("staged" if not warnings else "needs_review"), warnings

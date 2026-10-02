@@ -12,6 +12,7 @@
 | [Research synthesis](research/source-synthesis.md) | Findings and conflicts from the supplied research briefs |
 | [Technical references](research/references.md) | Primary documentation used to check format and platform details |
 | [Evaluation plan](quality/evaluation.md) | Dataset, baselines, metrics, and release gates |
+| [Report reliability and calibration](quality/reliability-and-calibration.md) | Duplicate groups, conflict validation, history filters, reviewed labels, performance accounting, and policy activation |
 | [Synthetic comparison](quality/benchmark-2026-10-02.md) | First small rule-versus-AI development check |
 | [Roadmap](roadmap.md) | Build order and milestones |
 | [Brand](brand.md) | Logo assets, color use, and visual identity |

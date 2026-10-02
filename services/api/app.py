@@ -10,19 +10,26 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from services.worker.engine import ScheduleError, extract_events, parse_schedule, rank_activities, route_event
-from services.worker.ai import AiResponseError, AiUnavailable, OpenAIClient, ai_status, analyze_report, activity_card, rank_event, model_client
+from services.worker.ai import AiResponseError, AiUnavailable, OpenAIClient, ai_status, analyze_report, activity_card, rank_event, model_client, load_local_env
 from services.worker.ingest import document_rows
 from services.worker.capture import capture_status, decode_file, extract_document, transcribe_audio
 from services.worker.analytics import schedule_analytics
+from services.worker.duplicates import identity, similar_reports
+from services.worker.validation import actual_checks, competing_claims
+from services.worker.routing import routing_details, pipeline_for, policy_for
+from services.worker.usage import active_calls
+from services.api.history import enrich, query_history
+from services.api.quality import quality_status
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -116,16 +123,38 @@ def init_db() -> None:
           id TEXT PRIMARY KEY, payload_checksum TEXT NOT NULL,
           report_id TEXT NOT NULL REFERENCES reports(id)
         );
+        CREATE TABLE IF NOT EXISTS report_similarities (
+          report_id TEXT NOT NULL REFERENCES reports(id), related_id TEXT NOT NULL REFERENCES reports(id),
+          similarity REAL NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(report_id,related_id)
+        );
+        CREATE TABLE IF NOT EXISTS processing_runs (
+          id TEXT PRIMARY KEY, report_id TEXT REFERENCES reports(id), mode TEXT,
+          elapsed_ms REAL NOT NULL, queue_ms REAL NOT NULL, failed INTEGER NOT NULL,
+          error_type TEXT, model_calls TEXT NOT NULL, created_at TEXT NOT NULL
+        );
         """)
         columns = {row["name"] for row in db.execute("PRAGMA table_info(events)")}
         for name, definition in (("analysis_mode", "TEXT NOT NULL DEFAULT 'rules'"),
                                  ("model_name", "TEXT"), ("clarification_question", "TEXT"),
-                                 ("clarification_answer", "TEXT")):
+                                 ("clarification_answer", "TEXT"), ("checks", "TEXT NOT NULL DEFAULT '[]'"),
+                                 ("routing", "TEXT NOT NULL DEFAULT '{}'"), ("duplicate_of_event", "TEXT")):
             if name not in columns:
                 db.execute(f"ALTER TABLE events ADD COLUMN {name} {definition}")
         report_columns = {row["name"] for row in db.execute("PRAGMA table_info(reports)")}
         if "capture_asset_id" not in report_columns:
             db.execute("ALTER TABLE reports ADD COLUMN capture_asset_id TEXT REFERENCES capture_assets(id)")
+        for name, definition in (("fingerprint", "TEXT"), ("normalized_text", "TEXT"), ("identity_context", "TEXT"),
+                                 ("duplicate_of", "TEXT REFERENCES reports(id)"), ("duplicate_group_id", "TEXT"), ("input_rows", "TEXT")):
+            if name not in report_columns:
+                db.execute(f"ALTER TABLE reports ADD COLUMN {name} {definition}")
+        db.execute("UPDATE reports SET duplicate_group_id=id WHERE duplicate_group_id IS NULL")
+        db.executescript("""
+          CREATE INDEX IF NOT EXISTS reports_fingerprint_idx ON reports(version_id,fingerprint);
+          CREATE INDEX IF NOT EXISTS reports_group_idx ON reports(duplicate_group_id);
+          CREATE INDEX IF NOT EXISTS events_activity_idx ON events(selected_activity,kind,event_date,status);
+          CREATE INDEX IF NOT EXISTS events_history_idx ON events(discipline,status,event_date);
+          CREATE INDEX IF NOT EXISTS events_report_idx ON events(report_id);
+        """)
 
 
 def latest_version(db: sqlite3.Connection) -> sqlite3.Row | None:
@@ -139,15 +168,11 @@ def activities_for(db: sqlite3.Connection, version_id: str) -> list[dict]:
 
 
 def relationships_for(db: sqlite3.Connection, version_id: str) -> list[dict]:
-    source_ids = {row["source_key"]: row["external_id"] for row in db.execute(
-        "SELECT source_key, external_id FROM activities WHERE version_id=?", (version_id,))}
-    rows = [dict(row) for row in db.execute(
+    # The importer resolves TASKPRED task_id references exactly once. An external
+    # numeric activity code must never be remapped as another task's internal ID.
+    return [dict(row) for row in db.execute(
         "SELECT predecessor, successor, kind, lag FROM relationships WHERE version_id=?", (version_id,)
     )]
-    for row in rows:
-        row["predecessor"] = source_ids.get(row["predecessor"], row["predecessor"])
-        row["successor"] = source_ids.get(row["successor"], row["successor"])
-    return rows
 
 
 def embedding_index(version_id: str, activities: list[dict], client: OpenAIClient) -> dict[str, list[float]]:
@@ -191,7 +216,28 @@ def event_record(row: sqlite3.Row) -> dict:
     value = dict(row)
     value["candidates"] = json.loads(value["candidates"])
     value["warnings"] = json.loads(value["warnings"])
+    value["checks"] = json.loads(value.get("checks") or "[]")
+    value["routing"] = json.loads(value.get("routing") or "{}")
     return value
+
+
+def reviewed_activities(db, version_id):
+    activities = activities_for(db, version_id)
+    by_id = {activity["external_id"]: activity for activity in activities}
+    for event in db.execute("""SELECT e.selected_activity,e.kind,e.event_date FROM events e JOIN reports r ON r.id=e.report_id
+            WHERE r.version_id=? AND e.status IN ('approved','exported') ORDER BY e.decided_at,e.rowid""", (version_id,)):
+        if event["selected_activity"] in by_id and event["kind"] in {"actual_start", "actual_finish"}:
+            by_id[event["selected_activity"]][event["kind"]] = event["event_date"]
+    return activities
+
+
+def report_result(db, report_id, **extra):
+    report = db.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+    root = report["duplicate_of"] or report_id
+    events = [event_record(row) for row in db.execute("SELECT * FROM events WHERE report_id=? ORDER BY rowid", (root,))]
+    return {"report_id": report_id, "schedule_version": report["version_id"], "events": events,
+            "duplicate": bool(report["duplicate_of"]), "duplicate_of": report["duplicate_of"],
+            "duplicate_group_id": report["duplicate_group_id"], **extra}
 
 
 def import_schedule(filename: str, content: str) -> dict:
@@ -271,9 +317,7 @@ def existing_report_request(db: sqlite3.Connection, request_id: str, checksum: s
         return None
     if receipt["payload_checksum"] != checksum:
         raise ScheduleConflict("This saved report was changed after submission. Save a new report instead.")
-    report = db.execute("SELECT * FROM reports WHERE id=?", (receipt["report_id"],)).fetchone()
-    events = [event_record(row) for row in db.execute("SELECT * FROM events WHERE report_id=? ORDER BY rowid", (report["id"],))]
-    return {"report_id": report["id"], "schedule_version": report["version_id"], "events": events, "replayed": True}
+    return report_result(db, receipt["report_id"], replayed=True)
 
 
 def save_capture(kind: str, payload: dict, metadata: dict) -> dict:
@@ -314,12 +358,33 @@ def analytics_payload(payload: dict | None = None) -> dict:
 
 
 def submit_report(payload: dict) -> dict:
-    # Serialize writes and repeated offline requests in the local single-process API.
-    with _report_lock:
-        return _submit_report(payload)
+    started, result, error_type = time.perf_counter(), None, ""
+    calls = []
+    token = active_calls.set(calls)
+    acquired = started
+    try:
+        with _report_lock:
+            acquired = time.perf_counter()
+            result = _submit_report(payload)
+            return result
+    except Exception as exc:
+        error_type = type(exc).__name__
+        raise
+    finally:
+        active_calls.reset(token)
+        try:
+            with db_session() as db:
+                db.execute("INSERT INTO processing_runs VALUES (?,?,?,?,?,?,?,?,?)",
+                           (uid("run"), result.get("report_id") if result else None, payload.get("analysis_mode", "rules"),
+                            round((time.perf_counter()-started)*1000, 2), round((acquired-started)*1000, 2),
+                            int(bool(error_type)), error_type, json.dumps(calls), now()))
+        except sqlite3.Error:
+            # A telemetry write must not turn a committed report into a failed receipt.
+            pass
 
 
 def _submit_report(payload: dict) -> dict:
+    load_local_env()
     request_id = payload.get("client_request_id", "")
     if not isinstance(request_id, str) or len(request_id) > 100:
         raise ValueError("Invalid client request ID")
@@ -341,14 +406,29 @@ def _submit_report(payload: dict) -> dict:
     if analysis_mode == "ai" and (len(rows) > 5 or sum(len(row["text"]) for row in rows) > 12_000):
         raise ValueError("AI input is limited to five rows and 12,000 characters per report")
     with db_session() as db:
+        db.execute("BEGIN IMMEDIATE")
         version = latest_version(db)
         if not version:
             raise ValueError("Import a schedule before submitting reports")
         if payload.get("schedule_version") and payload["schedule_version"] != version["id"]:
             raise ScheduleConflict("The schedule changed. Review the saved report against the new import before submitting it.")
-        activities = activities_for(db, version["id"])
+        activities = reviewed_activities(db, version["id"])
         relationships = relationships_for(db, version["id"])
         version_id = version["id"]
+        fingerprint, normalized_text, identity_context = identity(rows, now()[:10])
+        duplicate = db.execute("SELECT id FROM reports WHERE version_id=? AND fingerprint=? AND duplicate_of IS NULL ORDER BY rowid LIMIT 1",
+                               (version_id, fingerprint)).fetchone()
+        if duplicate:
+            report_id = uid("rpt")
+            db.execute("""INSERT INTO reports (id,version_id,source_kind,filename,content,created_at,capture_asset_id,
+                          fingerprint,normalized_text,identity_context,duplicate_of,duplicate_group_id,input_rows) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       (report_id, version_id, payload.get("source_kind", "text"), payload.get("filename", ""),
+                        "\n\n".join(row["text"] for row in rows), now(), payload.get("capture_asset_id") or None,
+                        fingerprint, normalized_text, identity_context, duplicate["id"], duplicate["id"],json.dumps(rows)))
+            if request_id: db.execute("INSERT INTO report_requests VALUES (?,?,?)", (request_id, checksum, report_id))
+            return report_result(db, report_id, analysis_mode=analysis_mode)
+        possible_duplicates = similar_reports(normalized_text, identity_context, [dict(row) for row in db.execute(
+            "SELECT id,normalized_text,identity_context FROM reports WHERE version_id=? AND duplicate_of IS NULL ORDER BY rowid DESC LIMIT 200", (version_id,))])
     client = None
     vectors = None
     if analysis_mode == "ai":
@@ -373,56 +453,93 @@ def _submit_report(payload: dict) -> dict:
             candidates = event["candidates"]
             warnings = list(event["warnings"])
             warnings.extend(row.get("source_warnings", []))
-            warnings.extend(dependency_warnings(event, candidates[0]["activity_id"] if candidates else "",
-                                                activities, relationships))
-            if event["kind"] == "actual_finish" and candidates:
-                activity = next((a for a in activities if a["external_id"] == candidates[0]["activity_id"]), None)
-                if activity and not activity["actual_start"]:
-                    warnings.append("Actual start is not recorded")
+            checks = actual_checks(event, candidates[0]["activity_id"] if candidates else "", activities, relationships,
+                                   datetime.now(ZoneInfo("Asia/Kolkata")).date())
+            warnings.extend(item["message"] for item in checks if item["severity"] != "info")
+            if possible_duplicates: warnings.append("Possible duplicate report: compare the grouped source evidence before approval")
+            routing = routing_details(candidates, pipeline_for(client, status["reranker"] if client else "llm"),payload.get("source_kind","text"),event.get("discipline",""))
+            if routing["score"] < routing["min_score"]: warnings.append("No reliable activity match")
+            if len(candidates) > 1 and routing["margin"] < routing["min_margin"]: warnings.append("Several activities are plausible")
+            blocking = [message for message in warnings if message != "AI suggestion requires planner confirmation"]
+            staged = not blocking and (analysis_mode == "rules" or routing["calibrated"])
             output.append(dict(event, source_row=row["source_row"],
-                               status="needs_review" if warnings else event["status"], warnings=warnings))
+                               status="staged" if staged else "needs_review", warnings=list(dict.fromkeys(warnings)), checks=checks, routing=routing))
     source_content = (payload.get("content", "") if payload.get("source_kind") != "document"
                       else "\n\n".join(row["text"] for row in rows))
     with db_session() as db:
+        db.execute("BEGIN IMMEDIATE")
         if request_id:
             previous = existing_report_request(db, request_id, checksum)
             if previous:
                 return previous
         if latest_version(db)["id"] != version_id:
             raise ScheduleConflict("The schedule changed during analysis. Review the report against the new import and retry.")
+        pending = [event_record(row) for row in db.execute("SELECT e.* FROM events e JOIN reports r ON r.id=e.report_id WHERE r.version_id=? AND e.status IN ('staged','needs_review')",(version_id,))]
+        for event in output:
+            checks = competing_claims(event, [*pending,*[other for other in output if other is not event]], event["candidates"][0]["activity_id"] if event["candidates"] else "")
+            event["checks"].extend(checks)
+            event["warnings"] = list(dict.fromkeys([*event["warnings"],*[item["message"] for item in checks]]))
+            if checks: event["status"] = "needs_review"
         report_id = uid("rpt")
-        db.execute("INSERT INTO reports (id,version_id,source_kind,filename,content,created_at,capture_asset_id) VALUES (?,?,?,?,?,?,?)",
+        db.execute("""INSERT INTO reports (id,version_id,source_kind,filename,content,created_at,capture_asset_id,
+                      fingerprint,normalized_text,identity_context,duplicate_group_id,input_rows) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                    (report_id, version_id, payload.get("source_kind", "text"),
-                    payload.get("filename", ""), source_content, now(), payload.get("capture_asset_id") or None))
+                    payload.get("filename", ""), source_content, now(), payload.get("capture_asset_id") or None,
+                    fingerprint, normalized_text, identity_context, report_id,json.dumps(rows)))
+        for similar in possible_duplicates:
+            db.execute("INSERT INTO report_similarities VALUES (?,?,?,?)", (report_id, similar["report_id"], similar["similarity"], similar["reason"]))
         for event in output:
             event_id = uid("evt")
             db.execute("""INSERT INTO events
               (id,report_id,source_row,text,kind,event_date,discipline,location,status,candidates,warnings,
-               analysis_mode,model_name,clarification_question)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               analysis_mode,model_name,clarification_question,checks,routing)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
               (event_id, report_id, event["source_row"], event["text"], event["kind"],
                event["event_date"], event["discipline"], event["location"], event["status"],
                json.dumps(event["candidates"]), json.dumps(event["warnings"]), analysis_mode,
-               client.model if client else "", event.get("clarification_question", "")))
+               client.model if client else "", event.get("clarification_question", ""), json.dumps(event["checks"]), json.dumps(event["routing"])))
             event["id"] = event_id
         if request_id:
             db.execute("INSERT INTO report_requests VALUES (?,?,?)", (request_id, checksum, report_id))
         return {"report_id": report_id, "schedule_version": version_id,
-                "analysis_mode": analysis_mode, "events": output}
+                "analysis_mode": analysis_mode, "events": output, "duplicate": False, "possible_duplicates": possible_duplicates}
 
 
 def clarify_event(event_id: str, answer: str) -> dict:
+    calls, started, failure, report_id = [], time.perf_counter(), "", None
+    token = active_calls.set(calls)
+    try:
+        result = _clarify_event(event_id, answer)
+        report_id = result.pop("report_id")
+        return result
+    except Exception as exc:
+        failure = type(exc).__name__
+        raise
+    finally:
+        active_calls.reset(token)
+        try:
+            with db_session() as db:
+                db.execute("INSERT INTO processing_runs VALUES (?,?,?,?,?,?,?,?,?)",
+                           (uid("run"), report_id, "clarification", round((time.perf_counter()-started)*1000, 2),
+                            0, int(bool(failure)), failure, json.dumps(calls), now()))
+        except sqlite3.Error:
+            pass
+
+
+def _clarify_event(event_id: str, answer: str) -> dict:
     answer = answer.strip()
     if not answer or len(answer) > 400:
         raise ValueError("Clarification must be between 1 and 400 characters")
     with db_session() as db:
-        row = db.execute("""SELECT e.*, r.version_id FROM events e JOIN reports r ON r.id=e.report_id
+        row = db.execute("""SELECT e.*, r.version_id,r.source_kind FROM events e JOIN reports r ON r.id=e.report_id
                             WHERE e.id=?""", (event_id,)).fetchone()
         if not row:
             raise LookupError("Event not found")
         if row["analysis_mode"] != "ai" or row["status"] not in {"needs_review", "staged"}:
             raise ValueError("Only pending AI suggestions can be clarified")
-        activities = activities_for(db, row["version_id"])
+        if latest_version(db)["id"] != row["version_id"]:
+            raise ScheduleConflict("Re-submit this source against the current schedule before refining it")
+        activities = reviewed_activities(db, row["version_id"])
         relationships = relationships_for(db, row["version_id"])
         version_id = row["version_id"]
         event = dict(row)
@@ -433,24 +550,35 @@ def clarify_event(event_id: str, answer: str) -> dict:
     vectors = embedding_index(version_id, activities, client)
     candidates, ambiguous, question = rank_event(event, activities, relationships, vectors, client,
                                                  status["reranker"], clarification=answer)
+    previous_checks = {item["message"] for item in json.loads(event["checks"])}
     warnings = [warning for warning in json.loads(event["warnings"])
-                if warning not in {"Several activities are plausible"} and
-                not warning.startswith("Predecessor ") and not warning.startswith("Starts before predecessor ")]
+                if warning not in previous_checks | {"Several activities are plausible", "No reliable activity match"}]
     if ambiguous:
         warnings.append("Several activities are plausible")
-    warnings.extend(dependency_warnings(event, candidates[0]["activity_id"] if candidates else "",
-                                        activities, relationships))
+    routing = routing_details(candidates, pipeline_for(client, status["reranker"]),event["source_kind"],event.get("discipline",""))
+    if routing["score"] < routing["min_score"]: warnings.append("No reliable activity match")
+    if len(candidates) > 1 and routing["margin"] < routing["min_margin"]: warnings.append("Several activities are plausible")
     with db_session() as db:
-        changed = db.execute("""UPDATE events SET candidates=?, warnings=?, clarification_question=?, clarification_answer=?, model_name=?
+        db.execute("BEGIN IMMEDIATE")
+        if latest_version(db)["id"] != version_id:
+            raise ScheduleConflict("The schedule changed during refinement; re-submit the source")
+        checks = actual_checks(event, candidates[0]["activity_id"] if candidates else "",
+                               reviewed_activities(db, version_id), relationships_for(db, version_id),
+                               datetime.now(ZoneInfo("Asia/Kolkata")).date())
+        checks.extend(pending_checks(db,event,candidates[0]["activity_id"] if candidates else "",event["event_date"]))
+        warnings.extend(item["message"] for item in checks if item["severity"] != "info")
+        warnings = list(dict.fromkeys(warnings))
+        state = "staged" if routing["calibrated"] and not [w for w in warnings if w != "AI suggestion requires planner confirmation"] else "needs_review"
+        changed = db.execute("""UPDATE events SET candidates=?, warnings=?, clarification_question=?, clarification_answer=?, model_name=?,checks=?,routing=?,status=?
                       WHERE id=? AND status IN ('needs_review','staged')""",
                    (json.dumps(candidates), json.dumps(warnings), question if ambiguous else "", answer,
-                    client.model, event_id))
+                    client.model, json.dumps(checks), json.dumps(routing), state, event_id))
         if changed.rowcount != 1:
             raise ValueError("This event already has a decision")
         db.execute("INSERT INTO audit (event_id,action,actor,detail,created_at) VALUES (?,?,?,?,?)",
                    (event_id, "clarify", "Supervisor", json.dumps({"answer": answer,
                     "candidate_ids": [candidate["activity_id"] for candidate in candidates]}), now()))
-    return {"id": event_id, "candidates": candidates, "warnings": warnings,
+    return {"id": event_id, "report_id": event["report_id"], "candidates": candidates, "warnings": warnings, "checks": checks, "routing": routing,
             "clarification_question": question if ambiguous else "", "clarification_answer": answer}
 
 
@@ -461,14 +589,17 @@ def decide_event(event_id: str, payload: dict) -> dict:
     reason = (payload.get("reason") or "").strip()
     actor = (payload.get("actor") or "Planner").strip()[:80]
     with db_session() as db:
+        db.execute("BEGIN IMMEDIATE")
         event = db.execute("""SELECT e.*, r.version_id FROM events e
             JOIN reports r ON r.id=e.report_id WHERE e.id=?""", (event_id,)).fetchone()
         if not event:
             raise LookupError("Event not found")
-        if event["status"] in {"approved", "rejected", "recorded", "exported"}:
+        if event["status"] in {"approved", "rejected", "recorded", "exported", "duplicate"}:
             raise ValueError("This event already has a decision")
+        if action != "reject" and latest_version(db)["id"] != event["version_id"]:
+            raise ScheduleConflict("This event belongs to an older schedule. Re-submit its source against the current import.")
         activity_id = (payload.get("activity_id") or "").strip()
-        event_date = (payload.get("event_date") or event["event_date"] or "").strip()
+        event_date = (payload.get("event_date",event["event_date"]) or "").strip()
         if action == "approve":
             if event["kind"] not in {"actual_start", "actual_finish"}:
                 raise ValueError("Only actual start and finish events can update the schedule")
@@ -480,34 +611,37 @@ def decide_event(event_id: str, payload: dict) -> dict:
             date.fromisoformat(event_date)
             if date.fromisoformat(event_date) > datetime.now(ZoneInfo("Asia/Kolkata")).date():
                 raise ValueError("An actual event date cannot be in the future")
-            relation_flags = dependency_warnings(
-                {"kind": event["kind"], "event_date": event_date}, activity_id,
-                activities_for(db, event["version_id"]), relationships_for(db, event["version_id"]))
-            if relation_flags and not reason:
-                raise ValueError("Add a decision note to approve an out-of-sequence actual")
-            activity = db.execute("SELECT * FROM activities WHERE version_id=? AND external_id=?",
-                                  (event["version_id"], activity_id)).fetchone()
-            if event["kind"] == "actual_finish" and activity["actual_start"]:
-                try:
-                    if date.fromisoformat(event_date) < date.fromisoformat(activity["actual_start"][:10]):
-                        raise ValueError("Actual finish precedes the recorded actual start")
-                except ValueError as exc:
-                    if "precedes" in str(exc):
-                        raise
-            if event["kind"] == "actual_start" and activity["actual_finish"]:
-                try:
-                    if date.fromisoformat(event_date) > date.fromisoformat(activity["actual_finish"][:10]):
-                        raise ValueError("Actual start follows the recorded actual finish")
-                except ValueError as exc:
-                    if "follows" in str(exc):
-                        raise
-            status = "approved"
+            checks = actual_checks({"kind": event["kind"], "event_date": event_date}, activity_id,
+                                   reviewed_activities(db, event["version_id"]), relationships_for(db, event["version_id"]),
+                                   datetime.now(ZoneInfo("Asia/Kolkata")).date())
+            checks.extend(pending_checks(db,dict(event),activity_id,event_date))
+            errors = [item["message"] for item in checks if item["severity"] == "error"]
+            if errors:
+                raise ValueError("; ".join(errors))
+            if any(item["severity"] == "warning" for item in checks) and not reason:
+                raise ValueError("Add a decision note acknowledging the dependency or missing-date warnings")
+            duplicate = next((item for item in checks if item["code"] == "duplicate_actual"), None)
+            status = "duplicate" if duplicate else "approved"
+            prior = db.execute("""SELECT e.id FROM events e JOIN reports r ON r.id=e.report_id
+                WHERE r.version_id=? AND e.selected_activity=? AND e.kind=? AND e.event_date=?
+                AND e.status IN ('approved','exported') ORDER BY e.decided_at,e.id LIMIT 1""",
+                (event["version_id"], activity_id, event["kind"], event_date)).fetchone()
+            db.execute("UPDATE events SET checks=?,duplicate_of_event=? WHERE id=?",
+                       (json.dumps(checks), prior["id"] if duplicate and prior else None, event_id))
+
         elif action == "record":
             if activity_id and not db.execute("SELECT 1 FROM activities WHERE version_id=? AND external_id=?",
                                               (event["version_id"], activity_id)).fetchone():
                 raise ValueError("Choose an activity from the imported schedule")
             if event_date:
                 date.fromisoformat(event_date)
+            checks = actual_checks({**dict(event),"event_date":event_date},activity_id,
+                                   reviewed_activities(db,event["version_id"]),relationships_for(db,event["version_id"]),
+                                   datetime.now(ZoneInfo("Asia/Kolkata")).date())
+            checks.extend(pending_checks(db,dict(event),activity_id,event_date))
+            if any(item["severity"] == "warning" for item in checks) and not reason:
+                raise ValueError("Add a decision note explaining the conflicting progress claim")
+            db.execute("UPDATE events SET checks=? WHERE id=?",(json.dumps(checks),event_id))
             status = "recorded"
         else:
             status = "rejected"
@@ -516,12 +650,13 @@ def decide_event(event_id: str, payload: dict) -> dict:
                   decision_reason=?, decided_at=? WHERE id=?""",
                   (status, activity_id, event_date, reason, now(), event_id))
         db.execute("INSERT INTO audit (event_id,action,actor,detail,created_at) VALUES (?,?,?,?,?)",
-                   (event_id, action, actor, json.dumps({"activity_id": activity_id, "event_date": event_date, "reason": reason}), now()))
+                   (event_id, "consolidate" if status == "duplicate" else action, actor, json.dumps({"activity_id": activity_id, "event_date": event_date, "reason": reason}), now()))
         return {"id": event_id, "status": status, "activity_id": activity_id, "event_date": event_date}
 
 
 def build_export() -> dict:
     with db_session() as db:
+        db.execute("BEGIN IMMEDIATE")
         version = latest_version(db)
         if not version:
             raise ValueError("Import a schedule first")
@@ -529,6 +664,36 @@ def build_export() -> dict:
             WHERE r.version_id=? AND e.status='approved' ORDER BY e.decided_at, e.id""", (version["id"],)).fetchall()
         if not rows:
             raise ValueError("There are no approved events to export")
+        effective = reviewed_activities(db, version["id"])
+        relationships = relationships_for(db, version["id"])
+        seen = {(row["selected_activity"], row["kind"], row["event_date"]): row["id"] for row in db.execute(
+            "SELECT e.* FROM events e JOIN reports r ON r.id=e.report_id WHERE r.version_id=? AND e.status='exported'", (version["id"],))}
+        unique, consolidated = [], []
+        baseline = {a["external_id"]: a for a in activities_for(db, version["id"])}
+        for row in rows:
+            if row["kind"] not in {"actual_start", "actual_finish"}:
+                raise ValueError("Export contains a non-actual event")
+            checks = actual_checks(dict(row), row["selected_activity"], effective, relationships,
+                                   datetime.now(ZoneInfo("Asia/Kolkata")).date())
+            errors = [item["message"] for item in checks if item["severity"] == "error"]
+            if errors: raise ValueError("Export blocked: " + "; ".join(errors))
+            if any(item["severity"] == "warning" for item in checks) and not row["decision_reason"]:
+                raise ValueError("Review dependency warnings before exporting " + row["id"])
+            key = (row["selected_activity"], row["kind"], row["event_date"])
+            imported = (baseline.get(row["selected_activity"], {}).get(row["kind"]) or "")[:10]
+            if imported and imported != row["event_date"]:
+                raise ValueError("Export blocked: this actual conflicts with the imported schedule")
+            if key in seen or imported == row["event_date"]:
+                db.execute("UPDATE events SET status='duplicate',duplicate_of_event=? WHERE id=?", (seen.get(key), row["id"]))
+                db.execute("INSERT INTO audit (event_id,action,actor,detail,created_at) VALUES (?,?,?,?,?)",
+                           (row["id"], "consolidate", "Export validation", json.dumps({"duplicate_of": seen.get(key), "already_in_import": imported == row["event_date"]}), now()))
+                consolidated.append(row["id"])
+            else:
+                seen[key] = row["id"]; unique.append(row)
+        rows = unique
+        if not rows:
+            return {"id": None, "manifest": {"row_count": 0}, "download": None,
+                    "message": "These actuals were already recorded. Duplicate claims were grouped; no new export was created.", "consolidated_event_ids": consolidated}
         stream = io.StringIO()
         writer = csv.writer(stream)
         writer.writerow(["schedule_version", "activity_id", "event_kind", "actual_date", "discipline",
@@ -546,6 +711,25 @@ def build_export() -> dict:
                    (export_id, version["id"], content, json.dumps(manifest), now()))
         db.executemany("UPDATE events SET status='exported' WHERE id=?", [(row["id"],) for row in rows])
         return {"id": export_id, "manifest": manifest, "download": f"/api/exports/{export_id}.csv"}
+
+
+def check_proposal(event_id, payload):
+    with db_session() as db:
+        event = db.execute("SELECT e.*,r.version_id FROM events e JOIN reports r ON r.id=e.report_id WHERE e.id=?", (event_id,)).fetchone()
+        if not event: raise LookupError("Event not found")
+        checks = actual_checks({**dict(event), "event_date": payload.get("event_date",event["event_date"])},
+                               payload.get("activity_id", ""), reviewed_activities(db, event["version_id"]),
+                               relationships_for(db, event["version_id"]), datetime.now(ZoneInfo("Asia/Kolkata")).date())
+        checks.extend(pending_checks(db,dict(event),payload.get("activity_id",""),payload.get("event_date",event["event_date"])))
+        if latest_version(db)["id"] != event["version_id"]:
+            checks.append({"code": "stale_schedule", "severity": "error", "message": "The schedule changed; re-submit the original source against the new import"})
+        return {"checks": checks, "blocked": any(item["severity"] == "error" for item in checks),
+                "requires_reason": any(item["severity"] == "warning" for item in checks)}
+
+
+def pending_checks(db,event,activity_id,event_date):
+    pending = [event_record(row) for row in db.execute("SELECT e.* FROM events e JOIN reports r ON r.id=e.report_id WHERE r.version_id=? AND e.status IN ('staged','needs_review') AND e.id<>?",(event["version_id"],event["id"]))]
+    return competing_claims({**event,"event_date":event_date},pending,activity_id)
 
 
 def summary() -> dict:
@@ -616,6 +800,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, ai_status())
             if path == "/api/capture/status":
                 return self.respond(200, capture_status())
+            if path == "/api/quality/status":
+                with db_session() as db:
+                    return self.respond(200, quality_status(db))
             if path == "/api/analytics":
                 return self.respond(200, analytics_payload())
             if path == "/api/summary":
@@ -627,9 +814,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/events":
                 with db_session() as db:
                     version = latest_version(db)
-                    rows = db.execute("""SELECT e.*, r.capture_asset_id FROM events e JOIN reports r ON r.id=e.report_id
+                    rows = db.execute("""SELECT e.*, r.capture_asset_id,r.source_kind,r.filename,r.created_at AS received_at,r.duplicate_group_id FROM events e JOIN reports r ON r.id=e.report_id
                         WHERE r.version_id=? ORDER BY r.created_at DESC, e.rowid DESC""", (version["id"],)).fetchall() if version else []
-                    return self.respond(200, [event_record(row) for row in rows])
+                    return self.respond(200, enrich(db, [event_record(row) for row in rows]))
+            if path == "/api/history":
+                params = {key: values[0] for key, values in parse_qs(urlparse(self.path).query).items()}
+                with db_session() as db:
+                    version = latest_version(db)
+                    return self.respond(200, query_history(db, version["id"], params, event_record) if version else
+                                        {"events": [], "total": 0, "limit": 50, "offset": 0, "has_more": False})
             match = re.fullmatch(r"/api/captures/(cap_[a-f0-9]+)(/original)?", path)
             if match:
                 with db_session() as db:
@@ -685,6 +878,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return self.wfile.write(body)
             return self.respond(404, {"error": "Not found"})
+        except ValueError as exc:
+            self.respond(400, {"error": str(exc)})
         except Exception as exc:
             self.respond(500, {"error": str(exc)})
 
@@ -713,7 +908,11 @@ class Handler(BaseHTTPRequestHandler):
             if match:
                 return self.respond(200, decide_event(match.group(1), payload))
             if path == "/api/exports":
-                return self.respond(201, build_export())
+                result = build_export()
+                return self.respond(201 if result["id"] else 200, result)
+            match = re.fullmatch(r"/api/events/(evt_[a-f0-9]+)/checks", path)
+            if match:
+                return self.respond(200, check_proposal(match.group(1), payload))
             if path == "/api/demo/load":
                 fixture = ROOT / "data" / "samples" / "pump-station.xer"
                 return self.respond(201, import_schedule(fixture.name, fixture.read_text()))

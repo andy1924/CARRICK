@@ -24,6 +24,8 @@ The local application imports XER/CSV schedules, captures notes and logs, and ex
 
 ## Milestone 3: Better matching and clarification
 
+Implemented additions include exact duplicate source groups, review-only similarity flags, all four dependency types with conflict checks, richer paginated history, processing telemetry, and reviewed evaluation/calibration commands. The larger independently reviewed dataset, executed release-gate evaluation, and activated calibrated policy remain outstanding. See [reliability and calibration](quality/reliability-and-calibration.md).
+
 - Build a labeled evaluation set with jargon and near-duplicate activities.
 - Compare lexical, semantic, and reranked candidates.
 - Add a single targeted clarification step and schedule-context warnings.

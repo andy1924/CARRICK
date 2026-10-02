@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from datetime import date, timedelta
@@ -18,6 +19,7 @@ from pathlib import Path
 
 from services.worker.engine import rank_activities, tokens
 from services.worker.local_models import installed_models, model_installed, ollama_request
+from services.worker.usage import record
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,7 +44,7 @@ def load_local_env() -> None:
     allowed = {"OPENAI_API_KEY", "CARRICK_AI_MODE", "CARRICK_OPENAI_MODEL",
                "CARRICK_EMBEDDING_MODEL", "CARRICK_RERANKER", "CARRICK_CROSS_ENCODER_MODEL",
                "CARRICK_OLLAMA_URL", "CARRICK_LOCAL_MODEL", "CARRICK_LOCAL_EMBEDDING_MODEL",
-               "CARRICK_VISION_MODEL", "CARRICK_WHISPER_MODEL_PATH", "CARRICK_OCR_LANG"}
+               "CARRICK_VISION_MODEL", "CARRICK_WHISPER_MODEL_PATH", "CARRICK_OCR_LANG", "CARRICK_ROUTING_POLICY"}
     path = ROOT / ".env"
     if not path.exists():
         return
@@ -127,6 +129,7 @@ class OpenAIClient:
         self.key = key or os.environ.get("OPENAI_API_KEY", "").strip()
         self.model = model or os.environ.get("CARRICK_OPENAI_MODEL", DEFAULT_MODEL)
         self.embedding_model = embedding_model or os.environ.get("CARRICK_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+        self.calls = []
         if not self.key:
             raise AiUnavailable("Add OPENAI_API_KEY to .env and restart Carrick")
 
@@ -137,13 +140,18 @@ class OpenAIClient:
             headers={"Authorization": f"Bearer {self.key}", "Content-Type": "application/json"},
             method="POST",
         )
+        started = time.perf_counter()
+        result = None
         try:
             with urllib.request.urlopen(request, timeout=55) as response:
-                return json.load(response)
+                result = json.load(response)
+                return result
         except urllib.error.HTTPError as exc:
             raise AiResponseError(f"OpenAI request failed (HTTP {exc.code}). Check the key, model, and account access.") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise AiResponseError("OpenAI could not be reached. Check the connection and retry.") from exc
+        finally:
+            record(self.calls, "openai", payload["model"], endpoint, (time.perf_counter()-started)*1000, result, result is None)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -181,14 +189,19 @@ class OllamaClient:
         self.model = os.environ.get("CARRICK_LOCAL_MODEL", "").strip()
         self._embedding_name = os.environ.get("CARRICK_LOCAL_EMBEDDING_MODEL", "").strip()
         self.embedding_model = "ollama:" + self._embedding_name
+        self.calls = []
         if not self.model or not self._embedding_name:
             raise AiUnavailable("Configure local generation and embedding models in .env")
 
     def _post(self, endpoint: str, payload: dict) -> dict:
+        started, result = time.perf_counter(), None
         try:
-            return ollama_request(endpoint, payload)
+            result = ollama_request(endpoint, payload)
+            return result
         except (RuntimeError, ValueError) as exc:
             raise AiResponseError(str(exc)) from exc
+        finally:
+            record(self.calls, "ollama", payload["model"], endpoint, (time.perf_counter()-started)*1000, result, result is None)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -332,6 +345,7 @@ def rank_event(event: dict, activities: list[dict], relationships: list[dict],
                             f"Clarification from site: {clarification}" if clarification else ""] if part)
     event_vector = client.embed([event_query])[0]
     pool = retrieve(event_query, activities, relationships, vectors, event_vector, limit=10)
+    client.last_retrieved_ids = [activity["external_id"] for activity in pool]
     if reranker == "cross_encoder":
         ranked_ids = _cross_encoder_rank(event_query, pool, relationships)
         ambiguous, reason, question = False, "Ranked by local cross-encoder", ""
@@ -389,7 +403,8 @@ def analyze_report(text: str, report_date: str, discipline: str, location: str,
             warnings.append("Several activities are plausible")
         warnings.append("AI suggestion requires planner confirmation")
         results.append({**event, "status": "needs_review", "warnings": warnings,
-                        "candidates": candidates, "clarification_question": question if ambiguous else ""})
+                        "candidates": candidates, "retrieved_ids": client.last_retrieved_ids,
+                        "clarification_question": question if ambiguous else ""})
     if not results:
         raise AiResponseError("AI found no grounded progress claims; revise the note or use rule-based capture")
     return results

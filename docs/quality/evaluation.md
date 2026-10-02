@@ -2,9 +2,11 @@
 
 The [first synthetic comparison](benchmark-2026-10-02.md) records a small end-to-end result for the optional AI path. It is not a production performance estimate.
 
+The implemented reviewed-dataset exporter, evaluation command, calibration gates, and content-free telemetry are documented in [report reliability and calibration](reliability-and-calibration.md). Current thresholds remain uncalibrated unless an independently reviewed, held-out-validated policy is explicitly configured. The new tools have not been executed in this session.
+
 ## Dataset
 
-Build a synthetic but structurally realistic schedule across several disciplines, locations, and repeated activity names. Create report examples with ground-truth activity IDs and event types. Include clean phrasing, abbreviations, spelling errors, multiple events, negation, future tense, missing dates, duplicate reports, conflicting actuals, and out-of-sequence work.
+Use synthetic schedules for development, and cleared representative project reports for production evaluation. The activation protocol requires at least 500 independently grouped, dual-reviewed reports in each of project-separated calibration and holdout splits. Include clean phrasing, abbreviations, spelling errors, multiple events, negation, future tense, missing dates, duplicate reports, conflicting actuals, and out-of-sequence work.
 
 Separate generation from evaluation. A person should review the held-out set, especially ambiguous and unmatched cases. Do not generate every report from the same template that the matcher sees during development. Version the fixture and label files.
 
@@ -24,8 +26,8 @@ Compare results on the same held-out cases. Report both improvement and added la
 | --- | --- |
 | Top-one match accuracy | Correct activity is ranked first among all labeled reports. |
 | Candidate recall | Correct activity appears in the candidate set before reranking. |
-| Accepted-update precision | Correct activity, event type, and actual date among proposals accepted without planner correction. |
-| Coverage | Share of reports that reach an accepted proposal without planner intervention. |
+| Staged-proposal precision | Correct unambiguous activity, event type, and actual date among proposals staged for confirmation. |
+| Coverage | Share of gold events reaching standard review without a clarification or structural conflict; planner approval remains mandatory. |
 | Clarification resolution | Share of ambiguous reports correctly resolved after one question. |
 | Extraction accuracy | Correct event type, negation, date, discipline, and event count. |
 | Unmatched recall | Truly new or unlinked activities are routed to review. |
@@ -42,4 +44,4 @@ Accuracy and coverage should be reported together. A system that sends every ite
 - Thresholds for automatic staging must be selected on development data and evaluated once on held-out data.
 - Any format or model with unverified behavior remains behind planner review.
 
-Initial numerical targets will be set after a pilot dataset exists. The research briefs' proposed percentages and response times are not treated as achieved results.
+The implemented calibration command has explicit configurable gate targets; its defaults and example budgets are requirements, not measurements. The research briefs' proposed percentages and response times are not treated as achieved results.
