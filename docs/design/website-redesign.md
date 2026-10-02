@@ -30,7 +30,7 @@ These are design references, not customer relationships or claims about Carrick.
 
 ## Product boundaries in the copy
 
-The website describes XER and CSV schedule import, text/email/selectable-text PDF reports, optional AI matching, planner decisions, and approved progress CSV export. It explains that native schedule output, direct P6 synchronization, and OCR for scanned PDFs are future capabilities. The tour uses synthetic data and does not store submitted notes or planner decisions. It contains no invented customers, testimonials, performance figures, certifications, or pricing.
+The website describes XER/CSV import, uploaded reports, optional cloud or local AI matching, planner decisions, and approved progress CSV export. Scan OCR and handwriting transcription now have optional local adapters with editable previews; microphone capture, offline reports, and schedule scenarios are implemented in the workspace. Native schedule output and direct P6 synchronization remain future capabilities. The tour uses synthetic data and does not store submitted notes or planner decisions. It contains no invented customers, testimonials, performance figures, certifications, or pricing.
 
 ## Interface behavior
 

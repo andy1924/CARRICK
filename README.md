@@ -2,7 +2,7 @@
 
 Carrick turns field progress reports into traceable proposals for updating an infrastructure project schedule. Supervisors can describe work in familiar language; planners retain control over uncertain matches and exported schedule changes.
 
-This repository contains a runnable local prototype and the design documentation. It supports XER or CSV schedule import, typed notes, CSV logs, text/email/PDF reports, planner decisions, and an approved progress CSV export. An optional AI path retrieves activities from the imported schedule, extracts structured events, and reranks existing TASK IDs. Native schedule-file output remains planned work.
+This repository contains a runnable local prototype and the design documentation. It supports XER or CSV schedule import, typed notes, CSV logs, text/email/PDF reports, planner decisions, and an approved progress CSV export. An optional AI path retrieves activities from the imported schedule, extracts structured events, and reranks existing TASK IDs. It also includes scan OCR, local handwriting and speech adapters, browser microphone capture, saved offline reports, local Ollama RAG, and dependency-based schedule scenarios. These additions need the setup described below; they have not been tested in this session. Native schedule-file output remains planned work.
 
 ## Run locally
 
@@ -26,7 +26,7 @@ python3 -m venv .venv
 .venv/bin/python -m services.api.app
 ```
 
-For selectable-text PDF imports, install `requirements-documents.txt` in the same environment. Scanned pages need a separate OCR step. `.eml` and `.txt` imports need no extra package. See [AI architecture](docs/architecture/ai-rag.md) for safeguards and model setup.
+For legacy selectable-text PDF imports, install `requirements-documents.txt`. The reviewed document upload path, including scanned pages and diary photos, uses `requirements-capture.txt` plus locally installed Tesseract; handwriting additionally needs a local vision model. `.eml` and `.txt` imports need no extra package. See [AI architecture](docs/architecture/ai-rag.md) for safeguards and model setup.
 
 Compare rule-based and AI results on the synthetic evaluation set after adding a key:
 
@@ -41,6 +41,14 @@ Run the checks with:
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+## Scans, voice, offline use, and forecasting
+
+The workspace adds editable OCR page previews, microphone recording and transcript correction, device-local drafts and an outbox, and **Schedule insights** with duration scenarios, float, WBS summaries, dependency conflicts, and an illustrative P50/P80 envelope. Source scans and recordings stay linked to submitted reports.
+
+See [capture and offline setup](docs/architecture/capture-offline-analytics.md) for package installation, local model provisioning, supported inputs, data storage, API contracts, and forecasting assumptions. `.env.example` includes the local model settings. After provisioning, start the local AI profile with `.venv/bin/python -m scripts.run_offline`. Standard matching and analytics do not require an LLM.
+
+Restart the Python server after updating these files so new endpoints and database migrations load. No tests, browser automation, model downloads, or inference were run for these additions.
 
 ## Intended product loop
 

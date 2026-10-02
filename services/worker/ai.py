@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from services.worker.engine import rank_activities, tokens
+from services.worker.local_models import installed_models, model_installed, ollama_request
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +40,9 @@ class AiResponseError(RuntimeError):
 def load_local_env() -> None:
     """Read only known settings; never execute or print content from .env."""
     allowed = {"OPENAI_API_KEY", "CARRICK_AI_MODE", "CARRICK_OPENAI_MODEL",
-               "CARRICK_EMBEDDING_MODEL", "CARRICK_RERANKER", "CARRICK_CROSS_ENCODER_MODEL"}
+               "CARRICK_EMBEDDING_MODEL", "CARRICK_RERANKER", "CARRICK_CROSS_ENCODER_MODEL",
+               "CARRICK_OLLAMA_URL", "CARRICK_LOCAL_MODEL", "CARRICK_LOCAL_EMBEDDING_MODEL",
+               "CARRICK_VISION_MODEL", "CARRICK_WHISPER_MODEL_PATH", "CARRICK_OCR_LANG"}
     path = ROOT / ".env"
     if not path.exists():
         return
@@ -58,6 +61,22 @@ def ai_status() -> dict:
     reranker = os.environ.get("CARRICK_RERANKER", "llm").lower()
     has_key = bool(os.environ.get("OPENAI_API_KEY", "").strip())
     cross_ready = importlib.util.find_spec("sentence_transformers") is not None
+    if mode == "ollama":
+        model = os.environ.get("CARRICK_LOCAL_MODEL", "").strip()
+        embedding = os.environ.get("CARRICK_LOCAL_EMBEDDING_MODEL", "").strip()
+        available, message = False, "Set the local generation and embedding models in .env."
+        if model and embedding:
+            try:
+                names = installed_models()
+                available = model_installed(model, names) and model_installed(embedding, names)
+                message = "Local AI is ready. Reports remain on this computer." if available else "Provision both configured models in Ollama before offline use."
+            except (RuntimeError, ValueError) as exc:
+                message = str(exc)
+        if reranker not in {"llm", "cross_encoder"}:
+            available, message = False, "CARRICK_RERANKER must be llm or cross_encoder."
+        if reranker == "cross_encoder" and (not cross_ready or not Path(os.environ.get("CARRICK_CROSS_ENCODER_MODEL", "__missing__")).is_dir()):
+            available, message = False, "Offline cross-encoder reranking needs a provisioned local model directory."
+        return {"available": available, "mode": mode, "reranker": reranker, "model": model, "message": message}
     available = mode == "openai" and has_key and reranker in {"llm", "cross_encoder"} and (reranker != "cross_encoder" or cross_ready)
     if mode != "openai":
         message = "Set CARRICK_AI_MODE=openai in .env to enable AI analysis."
@@ -156,6 +175,49 @@ class OpenAIClient:
         raise AiResponseError("AI returned no usable structured output")
 
 
+class OllamaClient:
+    def __init__(self):
+        load_local_env()
+        self.model = os.environ.get("CARRICK_LOCAL_MODEL", "").strip()
+        self._embedding_name = os.environ.get("CARRICK_LOCAL_EMBEDDING_MODEL", "").strip()
+        self.embedding_model = "ollama:" + self._embedding_name
+        if not self.model or not self._embedding_name:
+            raise AiUnavailable("Configure local generation and embedding models in .env")
+
+    def _post(self, endpoint: str, payload: dict) -> dict:
+        try:
+            return ollama_request(endpoint, payload)
+        except (RuntimeError, ValueError) as exc:
+            raise AiResponseError(str(exc)) from exc
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        vectors = self._post("/api/embed", {"model": self._embedding_name, "input": texts, "truncate": False}).get("embeddings", [])
+        if not isinstance(vectors, list) or len(vectors) != len(texts) or any(
+                not isinstance(vector, list) or not vector or any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in vector)
+                for vector in vectors):
+            raise AiResponseError("Local embedding response was incomplete")
+        return vectors
+
+    def structured(self, name: str, instructions: str, data: dict, schema: dict) -> dict:
+        result = self._post("/api/generate", {"model": self.model, "system": instructions,
+                            "prompt": json.dumps(data, ensure_ascii=False), "format": schema,
+                            "stream": False, "options": {"temperature": 0, "num_ctx": 16384}})
+        try:
+            value = json.loads(result.get("response", ""))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise AiResponseError("Local AI returned invalid structured output") from exc
+        if not isinstance(value, dict) or not result.get("done"):
+            raise AiResponseError("Local AI analysis did not complete")
+        return value
+
+
+def model_client() -> OpenAIClient | OllamaClient:
+    load_local_env()
+    return OllamaClient() if os.environ.get("CARRICK_AI_MODE", "off").lower() == "ollama" else OpenAIClient()
+
+
 def activity_card(activity: dict, relationships: list[dict] | None = None) -> str:
     card = (f"TASK ID {activity['external_id']} | {activity['name']} | "
             f"WBS {activity.get('wbs') or '—'} | location {activity.get('location') or '—'} | "
@@ -236,7 +298,11 @@ def _cross_encoder_rank(query: str, candidates: list[dict], relationships: list[
             from sentence_transformers import CrossEncoder
         except ImportError as exc:
             raise AiUnavailable("Install requirements-ai.txt to use the local cross-encoder") from exc
-        _cross_encoder = CrossEncoder(os.environ.get("CARRICK_CROSS_ENCODER_MODEL", DEFAULT_CROSS_ENCODER))
+        offline = os.environ.get("CARRICK_AI_MODE", "off").lower() == "ollama"
+        model = os.environ.get("CARRICK_CROSS_ENCODER_MODEL", DEFAULT_CROSS_ENCODER)
+        if offline and not Path(model).is_dir():
+            raise AiUnavailable("Offline reranking needs a local cross-encoder model directory")
+        _cross_encoder = CrossEncoder(model, local_files_only=offline)
     scores = _cross_encoder.predict([(query, activity_card(candidate, relationships)) for candidate in candidates])
     return [candidate["external_id"] for _, candidate in sorted(zip(scores, candidates), key=lambda pair: -float(pair[0]))]
 

@@ -21,7 +21,7 @@ The current local API runs this synchronously. A deployed version should move in
 - Source reports and retrieved records are treated as data, not instructions. Structured responses are validated against source quotes and the imported TASK ID set.
 - Retrieval and reranker scores are ranking signals, not correctness probabilities. They are not shown as calibrated confidence.
 - A model failure returns an explicit error. It does not silently relabel a rule-based result as an AI result.
-- PDF import reads selectable text. OCR for scanned pages is a separate adapter and is not implemented.
+- Reviewed document import now supports printed scan OCR and optional local vision transcription for handwritten diaries. See [capture, local inference, and offline deployment](capture-offline-analytics.md).
 
 ## Evaluation gate
 

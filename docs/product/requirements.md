@@ -12,7 +12,7 @@ Reduce the time and effort needed to link field progress to the correct L5/L6 sc
 
 ## Release scope
 
-The local prototype currently covers schedule import, text/CSV/email/selectable-text PDF reports, rule and optional AI event extraction, lexical and semantic activity suggestions, a clarification turn, planner decisions, and progress CSV export. The acceptance criteria below describe the fuller release and are not all complete.
+The local prototype covers schedule import, typed and uploaded reports, optional printed scan OCR and local diary transcription, microphone capture with local transcription, a device-local offline outbox, cloud or local RAG, clarification, planner decisions, progress CSV export, and read-only dependency scenarios. Capture engines and model files need separate provisioning; the latest additions have not been tested in this session. The acceptance criteria below describe the fuller release and are not all complete.
 
 | ID | Capability | Acceptance criterion |
 | --- | --- | --- |
@@ -38,7 +38,7 @@ The local prototype currently covers schedule import, text/CSV/email/selectable-
 
 ## Out of initial scope
 
-Custom speech recognition, scanned-handwriting recognition, automatic live PMIS writes, full critical-path recalculation, earned-value dashboards, delay prediction, resource leveling, and offline model deployment. The architecture keeps input and output adapters replaceable so these can be evaluated later.
+Training custom recognition models, automatic live PMIS writes, full P6 calendar-based recalculation, earned-value dashboards, calibrated delay prediction, resource leveling, and multi-device offline replication remain outside the current release. Provisioned local OCR, voice, handwriting, RAG, and elapsed-day scenario adapters are implemented; see [capture and offline boundaries](../architecture/capture-offline-analytics.md).
 
 ## Demonstration scenarios
 

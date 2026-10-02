@@ -77,4 +77,6 @@ sequenceDiagram
 - **Later:** a typed API, separate job worker, PostgreSQL, durable queue, and versioned file storage. Calibrate semantic retrieval and reranking on a reviewed matching benchmark.
 - Heavy parsing or inference should not rely on in-process API background tasks in a shared deployment.
 
+The local build now includes scan and voice adapters, retained source captures, a browser service worker and IndexedDB outbox, an Ollama inference profile, and a read-only schedule scenario engine. See [capture, offline operation, and analytics](capture-offline-analytics.md) for implementation boundaries and deployment.
+
 See [data model](data-model.md), [API outline](api.md), and [schedule integration](schedule-integration.md) for the contracts behind these boundaries.

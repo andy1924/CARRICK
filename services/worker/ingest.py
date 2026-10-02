@@ -41,8 +41,11 @@ def document_rows(filename: str, content: str) -> list[dict]:
             raise
         except Exception as exc:
             raise ValueError("Could not read the PDF text layer") from exc
+        if any(not row["text"] for row in rows):
+            from services.worker.capture import extract_document
+            rows = extract_document(filename, content)
         rows = [row for row in rows if row["text"]]
         if not rows:
-            raise ValueError("No selectable text found. Scanned PDFs need OCR before import.")
+            raise ValueError("No readable report text found. Review the scan or use handwriting transcription.")
         return rows
     raise ValueError("Document must be a .txt, .eml, or .pdf file")

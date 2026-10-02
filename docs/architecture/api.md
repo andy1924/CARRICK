@@ -1,6 +1,6 @@
 # API outline
 
-This is the target interface, not the current endpoint list. The local prototype currently exposes `/api/summary`, `/api/activities`, `/api/events`, `/api/ai/status`, `/api/schedules/import`, `/api/reports`, `/api/events/{id}/clarify`, `/api/events/{id}/decision`, `/api/exports`, and a CSV download route. `POST /api/reports` accepts `analysis_mode: "rules" | "ai"`; `source_kind: "document"` accepts `.txt`, `.eml`, and selectable-text `.pdf` reports. It has no authentication or public deployment support. Use versioned routes and generated API schemas for a shared deployment.
+This is the target interface, not the current endpoint list. The local prototype currently exposes `/api/summary`, `/api/activities`, `/api/events`, `/api/ai/status`, `/api/schedules/import`, `/api/reports`, `/api/events/{id}/clarify`, `/api/events/{id}/decision`, `/api/exports`, and a CSV download route. `POST /api/reports` accepts `analysis_mode: "rules" | "ai"`; `source_kind: "document"` accepts `.txt`, `.eml`, and selectable-text `.pdf` reports. The local API also exposes capture receipts, OCR/transcription previews, original-source downloads, idempotent report requests, and scenario analytics. See [capture and offline API contracts](capture-offline-analytics.md). It has no authentication or public deployment support. Use versioned routes and generated API schemas for a shared deployment.
 
 | Method and path | Purpose | Main result |
 | --- | --- | --- |

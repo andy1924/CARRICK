@@ -4,7 +4,7 @@ Responsive local interface for supervisor reporting and planner review. It curre
 
 The introduction at `/` explains the product through an interactive workflow and a read-only field-note preview against a synthetic schedule. The working application is at `/app`.
 
-Current screens: report composer, schedule import, activity search, review queue, event history, and export summary. The report composer can use grounded AI matching when configured, and the review queue accepts a short clarification to refine an AI suggestion. Text, email, and selectable-text PDF reports can be imported. The UI distinguishes staged, approved, rejected, and exported states.
+Current screens: report composer, schedule import, activity search, review queue, event history, and export summary. The report composer can use grounded AI matching when configured, and the review queue accepts a short clarification to refine an AI suggestion. Text, email, PDF, and diary-image uploads have an editable extraction preview. Optional local OCR, handwriting, and speech engines must be configured separately. The browser records voice notes and retains drafts and submitted offline reports in IndexedDB. Schedule insights presents dependency scenarios and a saved offline result. The UI distinguishes staged, approved, rejected, and exported states.
 
 See [product requirements](../../docs/product/requirements.md) and [API outline](../../docs/architecture/api.md).
 

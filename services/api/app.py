@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -18,14 +19,22 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from services.worker.engine import ScheduleError, extract_events, parse_schedule, rank_activities, route_event
-from services.worker.ai import AiResponseError, AiUnavailable, OpenAIClient, ai_status, analyze_report, activity_card, rank_event
+from services.worker.ai import AiResponseError, AiUnavailable, OpenAIClient, ai_status, analyze_report, activity_card, rank_event, model_client
 from services.worker.ingest import document_rows
+from services.worker.capture import capture_status, decode_file, extract_document, transcribe_audio
+from services.worker.analytics import schedule_analytics
 
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB = ROOT / "apps" / "web"
 DB_PATH = Path(os.environ.get("CARRICK_DB", ROOT / "data" / "private" / "carrick.sqlite3"))
-MAX_BODY = 3_000_000
+MAX_BODY = 16_000_000
+CAPTURE_DIR = DB_PATH.parent / "captures"
+_report_lock = threading.Lock()
+
+
+class ScheduleConflict(ValueError):
+    pass
 
 
 def now() -> str:
@@ -99,6 +108,14 @@ def init_db() -> None:
           model TEXT NOT NULL, activity_id TEXT NOT NULL, vector TEXT NOT NULL,
           PRIMARY KEY (version_id, model, activity_id)
         );
+        CREATE TABLE IF NOT EXISTS capture_assets (
+          id TEXT PRIMARY KEY, kind TEXT NOT NULL, filename TEXT NOT NULL,
+          checksum TEXT NOT NULL, metadata TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS report_requests (
+          id TEXT PRIMARY KEY, payload_checksum TEXT NOT NULL,
+          report_id TEXT NOT NULL REFERENCES reports(id)
+        );
         """)
         columns = {row["name"] for row in db.execute("PRAGMA table_info(events)")}
         for name, definition in (("analysis_mode", "TEXT NOT NULL DEFAULT 'rules'"),
@@ -106,6 +123,9 @@ def init_db() -> None:
                                  ("clarification_answer", "TEXT")):
             if name not in columns:
                 db.execute(f"ALTER TABLE events ADD COLUMN {name} {definition}")
+        report_columns = {row["name"] for row in db.execute("PRAGMA table_info(reports)")}
+        if "capture_asset_id" not in report_columns:
+            db.execute("ALTER TABLE reports ADD COLUMN capture_asset_id TEXT REFERENCES capture_assets(id)")
 
 
 def latest_version(db: sqlite3.Connection) -> sqlite3.Row | None:
@@ -198,6 +218,27 @@ def import_schedule(filename: str, content: str) -> dict:
 
 def _report_rows(payload: dict) -> list[dict]:
     kind = payload.get("source_kind", "text")
+    if payload.get("capture_asset_id"):
+        with db_session() as db:
+            asset = db.execute("SELECT * FROM capture_assets WHERE id=?", (payload["capture_asset_id"],)).fetchone()
+        if not asset or asset["kind"] != kind or kind not in {"document", "voice"}:
+            raise ValueError("The capture source could not be found")
+        metadata = json.loads(asset["metadata"])
+        originals = metadata["pages"] if kind == "document" else [{"text": metadata["text"], "source_row": None, "warnings": metadata["warnings"]}]
+        reviewed = payload.get("reviewed_pages") if kind == "document" else [{"text": payload.get("content", "")}]
+        if not isinstance(reviewed, list) or len(reviewed) != len(originals):
+            raise ValueError("Review each extracted page before submitting the document")
+        rows = []
+        for original, correction in zip(originals, reviewed):
+            text = correction.get("text") if isinstance(correction, dict) else None
+            if not isinstance(text, str) or len(text) > 12000:
+                raise ValueError("Each reviewed page must contain at most 12,000 characters")
+            if text.strip():
+                rows.append({"text": text.strip(), "source_row": original["source_row"],
+                             "source_warnings": original.get("warnings", []),
+                             "event_date": payload.get("event_date") or "",
+                             "discipline": payload.get("discipline") or "", "location": payload.get("location") or ""})
+        return rows
     if kind == "document":
         rows = document_rows(payload.get("filename", ""), payload.get("content", ""))
         return [dict(row, event_date=(payload.get("event_date") or "").strip(),
@@ -224,7 +265,70 @@ def _report_rows(payload: dict) -> list[dict]:
              "location": payload.get("location", "")}]
 
 
+def existing_report_request(db: sqlite3.Connection, request_id: str, checksum: str) -> dict | None:
+    receipt = db.execute("SELECT * FROM report_requests WHERE id=?", (request_id,)).fetchone()
+    if not receipt:
+        return None
+    if receipt["payload_checksum"] != checksum:
+        raise ScheduleConflict("This saved report was changed after submission. Save a new report instead.")
+    report = db.execute("SELECT * FROM reports WHERE id=?", (receipt["report_id"],)).fetchone()
+    events = [event_record(row) for row in db.execute("SELECT * FROM events WHERE report_id=? ORDER BY rowid", (report["id"],))]
+    return {"report_id": report["id"], "schedule_version": report["version_id"], "events": events, "replayed": True}
+
+
+def save_capture(kind: str, payload: dict, metadata: dict) -> dict:
+    filename = Path(payload.get("filename", "report")).name
+    suffix = Path(filename).suffix.lower()
+    raw = payload["content"].encode("utf-8") if suffix in {".txt", ".eml"} else decode_file(payload["content"])
+    if len(raw) > 10_000_000:
+        raise ValueError("Capture files must be 10 MB or smaller")
+    asset_id = uid("cap")
+    CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    target = CAPTURE_DIR / asset_id
+    target.write_bytes(raw)
+    target.chmod(0o600)
+    try:
+        with db_session() as db:
+            db.execute("INSERT INTO capture_assets VALUES (?,?,?,?,?,?)",
+                       (asset_id, kind, filename, hashlib.sha256(raw).hexdigest(), json.dumps(metadata), now()))
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    return {"capture_asset_id": asset_id, "filename": filename, "original_url": f"/api/captures/{asset_id}/original", **metadata}
+
+
+def analytics_payload(payload: dict | None = None) -> dict:
+    payload = payload or {}
+    with db_session() as db:
+        version = latest_version(db)
+        if not version:
+            return {"available": False, "reason": "Import a schedule to explore forecast scenarios.", "activities": []}
+        activities = activities_for(db, version["id"])
+        relationships = relationships_for(db, version["id"])
+        events = [dict(row) for row in db.execute("""SELECT e.* FROM events e JOIN reports r ON r.id=e.report_id
+                    WHERE r.version_id=? ORDER BY e.decided_at, e.rowid""", (version["id"],))]
+    result = schedule_analytics(activities, relationships, events,
+                               payload.get("as_of") or datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat(),
+                               float(payload.get("duration_factor", 1)))
+    return {"schedule_version": version["id"], **result}
+
+
 def submit_report(payload: dict) -> dict:
+    # Serialize writes and repeated offline requests in the local single-process API.
+    with _report_lock:
+        return _submit_report(payload)
+
+
+def _submit_report(payload: dict) -> dict:
+    request_id = payload.get("client_request_id", "")
+    if not isinstance(request_id, str) or len(request_id) > 100:
+        raise ValueError("Invalid client request ID")
+    checksum = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    if request_id:
+        with db_session() as db:
+            previous = existing_report_request(db, request_id, checksum)
+            if previous:
+                return previous
     rows = _report_rows(payload)
     if not rows or not any(row["text"] for row in rows):
         raise ValueError("Report has no usable text")
@@ -240,6 +344,8 @@ def submit_report(payload: dict) -> dict:
         version = latest_version(db)
         if not version:
             raise ValueError("Import a schedule before submitting reports")
+        if payload.get("schedule_version") and payload["schedule_version"] != version["id"]:
+            raise ScheduleConflict("The schedule changed. Review the saved report against the new import before submitting it.")
         activities = activities_for(db, version["id"])
         relationships = relationships_for(db, version["id"])
         version_id = version["id"]
@@ -249,7 +355,7 @@ def submit_report(payload: dict) -> dict:
         status = ai_status()
         if not status["available"]:
             raise AiUnavailable(status["message"])
-        client = OpenAIClient()
+        client = model_client()
         vectors = embedding_index(version_id, activities, client)
     output = []
     for row in rows:
@@ -266,6 +372,7 @@ def submit_report(payload: dict) -> dict:
         for event in events:
             candidates = event["candidates"]
             warnings = list(event["warnings"])
+            warnings.extend(row.get("source_warnings", []))
             warnings.extend(dependency_warnings(event, candidates[0]["activity_id"] if candidates else "",
                                                 activities, relationships))
             if event["kind"] == "actual_finish" and candidates:
@@ -277,10 +384,16 @@ def submit_report(payload: dict) -> dict:
     source_content = (payload.get("content", "") if payload.get("source_kind") != "document"
                       else "\n\n".join(row["text"] for row in rows))
     with db_session() as db:
+        if request_id:
+            previous = existing_report_request(db, request_id, checksum)
+            if previous:
+                return previous
+        if latest_version(db)["id"] != version_id:
+            raise ScheduleConflict("The schedule changed during analysis. Review the report against the new import and retry.")
         report_id = uid("rpt")
-        db.execute("INSERT INTO reports VALUES (?,?,?,?,?,?)",
+        db.execute("INSERT INTO reports (id,version_id,source_kind,filename,content,created_at,capture_asset_id) VALUES (?,?,?,?,?,?,?)",
                    (report_id, version_id, payload.get("source_kind", "text"),
-                    payload.get("filename", ""), source_content, now()))
+                    payload.get("filename", ""), source_content, now(), payload.get("capture_asset_id") or None))
         for event in output:
             event_id = uid("evt")
             db.execute("""INSERT INTO events
@@ -292,6 +405,8 @@ def submit_report(payload: dict) -> dict:
                json.dumps(event["candidates"]), json.dumps(event["warnings"]), analysis_mode,
                client.model if client else "", event.get("clarification_question", "")))
             event["id"] = event_id
+        if request_id:
+            db.execute("INSERT INTO report_requests VALUES (?,?,?)", (request_id, checksum, report_id))
         return {"report_id": report_id, "schedule_version": version_id,
                 "analysis_mode": analysis_mode, "events": output}
 
@@ -314,7 +429,7 @@ def clarify_event(event_id: str, answer: str) -> dict:
     status = ai_status()
     if not status["available"]:
         raise AiUnavailable(status["message"])
-    client = OpenAIClient()
+    client = model_client()
     vectors = embedding_index(version_id, activities, client)
     candidates, ambiguous, question = rank_event(event, activities, relationships, vectors, client,
                                                  status["reranker"], clarification=answer)
@@ -440,7 +555,7 @@ def summary() -> dict:
             return {"schedule": None, "counts": {}, "recent": []}
         counts = {row["status"]: row["count"] for row in db.execute("""SELECT e.status, count(*) AS count
             FROM events e JOIN reports r ON r.id=e.report_id WHERE r.version_id=? GROUP BY e.status""", (version["id"],))}
-        recent = [event_record(row) for row in db.execute("""SELECT e.* FROM events e JOIN reports r ON r.id=e.report_id
+        recent = [event_record(row) for row in db.execute("""SELECT e.*, r.capture_asset_id FROM events e JOIN reports r ON r.id=e.report_id
             WHERE r.version_id=? ORDER BY r.created_at DESC, e.rowid DESC LIMIT 8""", (version["id"],))]
         schedule = {key: version[key] for key in ("id", "filename", "format", "checksum", "created_at")}
         schedule["activity_count"] = db.execute("SELECT count(*) FROM activities WHERE version_id=?", (version["id"],)).fetchone()[0]
@@ -486,7 +601,7 @@ class Handler(BaseHTTPRequestHandler):
     def read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
         if length < 1 or length > MAX_BODY:
-            raise ValueError("Request body must be between 1 byte and 3 MB")
+            raise ValueError("Request body must be between 1 byte and 16 MB")
         value = json.loads(self.rfile.read(length))
         if not isinstance(value, dict):
             raise ValueError("Request body must be a JSON object")
@@ -499,6 +614,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, {"status": "ok"})
             if path == "/api/ai/status":
                 return self.respond(200, ai_status())
+            if path == "/api/capture/status":
+                return self.respond(200, capture_status())
+            if path == "/api/analytics":
+                return self.respond(200, analytics_payload())
             if path == "/api/summary":
                 return self.respond(200, summary())
             if path == "/api/activities":
@@ -508,9 +627,26 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/events":
                 with db_session() as db:
                     version = latest_version(db)
-                    rows = db.execute("""SELECT e.* FROM events e JOIN reports r ON r.id=e.report_id
+                    rows = db.execute("""SELECT e.*, r.capture_asset_id FROM events e JOIN reports r ON r.id=e.report_id
                         WHERE r.version_id=? ORDER BY r.created_at DESC, e.rowid DESC""", (version["id"],)).fetchall() if version else []
                     return self.respond(200, [event_record(row) for row in rows])
+            match = re.fullmatch(r"/api/captures/(cap_[a-f0-9]+)(/original)?", path)
+            if match:
+                with db_session() as db:
+                    asset = db.execute("SELECT * FROM capture_assets WHERE id=?", (match.group(1),)).fetchone()
+                if not asset:
+                    return self.respond(404, {"error": "Capture source not found"})
+                if not match.group(2):
+                    return self.respond(200, {"capture_asset_id": asset["id"], "filename": asset["filename"],
+                                             "checksum": asset["checksum"], **json.loads(asset["metadata"])})
+                body = (CAPTURE_DIR / asset["id"]).read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", "attachment; filename=carrick-source" + Path(asset["filename"]).suffix)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
             match = re.fullmatch(r"/api/exports/(exp_[a-f0-9]+)\.csv", path)
             if match:
                 with db_session() as db:
@@ -529,6 +665,11 @@ class Handler(BaseHTTPRequestHandler):
                       "/landing.js": ("landing.js", "text/javascript"),
                       "/landing.css": ("landing.css", "text/css"),
                       "/app.js": ("app.js", "text/javascript"),
+                      "/offline.js": ("offline.js", "text/javascript"),
+                      "/capture.js": ("capture.js", "text/javascript"),
+                      "/analytics.js": ("analytics.js", "text/javascript"),
+                      "/sw.js": ("sw.js", "text/javascript"),
+                      "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
                       "/styles.css": ("styles.css", "text/css"),
                       "/brand/carrick-mark.svg": ("brand/carrick-mark.svg", "image/svg+xml"),
                       "/brand/carrick-logo.svg": ("brand/carrick-logo.svg", "image/svg+xml"),
@@ -539,6 +680,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", f"{content_type}; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                if path == "/sw.js":
+                    self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 return self.wfile.write(body)
             return self.respond(404, {"error": "Not found"})
@@ -555,6 +698,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(201, import_schedule(payload.get("filename", ""), payload.get("content", "")))
             if path == "/api/reports":
                 return self.respond(201, submit_report(payload))
+            if path == "/api/documents/extract":
+                pages = extract_document(payload.get("filename", ""), payload.get("content", ""), bool(payload.get("handwriting")))
+                return self.respond(201, save_capture("document", payload, {"pages": pages}))
+            if path == "/api/voice/transcribe":
+                transcript = transcribe_audio(payload.get("filename", ""), payload.get("content", ""), payload.get("language", ""))
+                return self.respond(201, save_capture("voice", payload, transcript))
+            if path == "/api/analytics/scenario":
+                return self.respond(200, analytics_payload(payload))
             match = re.fullmatch(r"/api/events/(evt_[a-f0-9]+)/clarify", path)
             if match:
                 return self.respond(200, clarify_event(match.group(1), payload.get("answer", "")))
@@ -571,6 +722,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(404, {"error": str(exc)})
         except (AiUnavailable, AiResponseError) as exc:
             self.respond(503, {"error": str(exc)})
+        except ScheduleConflict as exc:
+            self.respond(409, {"error": str(exc), "code": "schedule_conflict"})
         except (ValueError, ScheduleError, json.JSONDecodeError) as exc:
             self.respond(400, {"error": str(exc)})
         except Exception as exc:

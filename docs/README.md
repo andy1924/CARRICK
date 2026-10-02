@@ -5,6 +5,7 @@
 | [Product requirements](product/requirements.md) | Users, feature scope, and acceptance criteria |
 | [System architecture](architecture/system.md) | Components, deployment shape, and processing flows |
 | [Grounded AI matching](architecture/ai-rag.md) | Retrieval, model boundaries, reranking, and safeguards |
+| [Capture, offline use, and analytics](architecture/capture-offline-analytics.md) | OCR, handwritten diaries, voice, local inference deployment, offline reports, and schedule scenarios |
 | [Data model](architecture/data-model.md) | Records, state transitions, provenance, and invariants |
 | [API outline](architecture/api.md) | Proposed interface contracts and failure behavior |
 | [Schedule integration](architecture/schedule-integration.md) | Import, staging, export, and validation boundary |

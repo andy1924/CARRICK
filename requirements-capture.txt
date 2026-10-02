@@ -1,0 +1,3 @@
+# Optional local OCR and speech engines. Provision model files separately.
+PyMuPDF>=1.26,<2
+faster-whisper>=1.1,<2

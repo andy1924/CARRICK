@@ -2,7 +2,7 @@
 
 ## Current build
 
-The local application loads a synthetic XER schedule or schedule CSV, accepts typed notes, discipline CSV, email, and selectable-text PDF reports, and exports approved events as a progress CSV. It now offers optional OpenAI-based event extraction, schedule-grounded semantic retrieval, a local cross-encoder reranker, and one clarification turn. Rules remain available as a baseline. It is a local prototype without user accounts, asynchronous jobs, OCR for scans, or native schedule-file output.
+The local application imports XER/CSV schedules, captures notes and logs, and exports approved progress. It includes optional cloud or local RAG, scan OCR, local vision transcription for handwritten diaries, browser microphone recording, local speech transcription, a cached workspace and device report outbox, and read-only schedule scenarios. OCR, speech, and local AI need separately provisioned engines/model files. The latest additions have not been tested in this session. See [capture, offline use, and analytics](architecture/capture-offline-analytics.md). It remains a local prototype without user accounts, asynchronous processing jobs, or native schedule-file output.
 
 ## Milestone 1: Schedule foundation
 
@@ -41,4 +41,4 @@ The local application loads a synthetic XER schedule or schedule CSV, accepts ty
 
 ## Later candidates
 
-Scanned diary extraction, native voice capture, additional schedule formats, live integrations, forecasting, advanced schedule analytics, and offline operation. Each requires a separate evidence-based decision.
+Validate OCR and handwriting on representative diaries, measure speech quality in site conditions, calibrate duration forecasts, add full calendar interpretation, and harden multi-device synchronization. Additional schedule formats and live integrations remain later work.
