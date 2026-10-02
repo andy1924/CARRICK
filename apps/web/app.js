@@ -1,9 +1,25 @@
-const state = { summary: null, activities: [], events: [], view: "overview", ai: null };
+const state = { summary: null, activities: [], events: [], view: "overview", ai: null, processing: false };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const safe = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
-const displayDate = (value) => value ? safe(String(value).slice(0, 10)) : "Date unknown";
-const labels = { overview: "Progress desk", capture: "New report", review: "Review queue", schedule: "Schedule", history: "Event log", exports: "Exports" };
+const displayDate = value => {
+  if (!value) return "Date not specified";
+  const parsed = new Date(String(value).slice(0, 10) + "T12:00:00");
+  return Number.isNaN(parsed.getTime()) ? safe(value) : new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" }).format(parsed);
+};
+const labels = { overview: "Overview", capture: "Capture report", review: "Review queue", schedule: "Schedule activities", history: "Progress history", exports: "Approved exports" };
+const checkIcon = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>';
+const reportIcon = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 2h8l4 4v12H4zM12 2v5h4M7 10h6M7 13h4"/></svg>';
+const mobileNavigation = window.matchMedia("(max-width: 760px)");
+
+function setNavigation(open) {
+  const expanded = open && mobileNavigation.matches;
+  document.body.classList.toggle("nav-open", expanded);
+  $("#nav-backdrop").hidden = !expanded;
+  $("#mobile-nav-toggle").setAttribute("aria-expanded", String(expanded));
+  $("#mobile-nav-toggle").setAttribute("aria-label", expanded ? "Close workspace navigation" : "Open workspace navigation");
+  $("#app-sidebar").inert = mobileNavigation.matches && !expanded;
+}
 
 async function request(path, options = {}) {
   const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
@@ -23,16 +39,24 @@ function toast(message, error = false) {
   toastTimer = setTimeout(() => el.className = "", 4000);
 }
 
-function go(view) {
+function go(view, updateHistory = true) {
+  if (!labels[view]) return;
   state.view = view;
-  $$(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.view === view));
+  $$(".nav-item").forEach(el => {
+    const active = el.dataset.view === view;
+    el.classList.toggle("active", active);
+    if (active) el.setAttribute("aria-current", "page"); else el.removeAttribute("aria-current");
+  });
   $$(".view").forEach(el => el.classList.toggle("active", el.id === `view-${view}`));
   $("#breadcrumb").textContent = labels[view];
+  document.title = `Carrick · ${labels[view]}`;
+  if (updateHistory && location.hash !== `#${view}`) history.pushState(null, "", `#${view}`);
+  setNavigation(false);
   if (view === "review") renderReview();
   if (view === "schedule") renderSchedule();
   if (view === "history") renderHistory();
   if (view === "exports") renderExports();
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  window.scrollTo({ top: 0, behavior: "instant" });
 }
 
 async function refresh() {
@@ -51,12 +75,12 @@ async function refreshAiStatus() {
   $("#ai-mode").disabled = !status.available;
   $("#ai-mode").checked = status.available;
   $("#ai-status").textContent = status.available
-    ? `${status.model} · ${status.reranker === "cross_encoder" ? "local cross-encoder" : "model reranking"} · planner review required`
-    : status.message;
+    ? "Schedule context helps interpret field language."
+    : "AI is unavailable. Standard matching is ready to use.";
 }
 
 function statusTag(status) {
-  const text = (status || "unknown").replaceAll("_", " ");
+  const text = { needs_review: "Awaiting review", staged: "Ready for review", approved: "Approved", rejected: "Rejected", recorded: "Recorded", exported: "Exported" }[status] || "Unclassified";
   return `<span class="tag ${safe(status)}">${safe(text)}</span>`;
 }
 
@@ -64,52 +88,61 @@ function renderOverview() {
   const schedule = state.summary?.schedule;
   $("#welcome").hidden = Boolean(schedule);
   $("#schedule-chip").textContent = schedule ? `${schedule.filename} · ${schedule.activity_count} activities` : "No schedule loaded";
+  $("#schedule-chip").title = $("#schedule-chip").textContent;
+  $("#sidebar-project").textContent = schedule ? schedule.filename.replace(/\.(xer|csv)$/i, "").replaceAll("-", " ").replaceAll("_", " ") : "Project workspace";
   const counts = state.summary?.counts || {};
   const pending = (counts.needs_review || 0) + (counts.staged || 0);
   $("#review-badge").hidden = !pending;
   $("#review-badge").textContent = pending;
   const metrics = [
-    ["ACTIVITIES", schedule?.activity_count || 0, "In working schedule"],
-    ["FIELD EVENTS", state.events.length, "Recorded from reports"],
-    ["TO REVIEW", pending, "Awaiting decision"],
-    ["APPROVED", (counts.approved || 0) + (counts.exported || 0), "Ready or exported"]
+    ["Schedule activities", schedule?.activity_count || 0, "In imported schedule"],
+    ["Field events", state.events.length, "Captured from reports"],
+    ["Awaiting review", pending, "Pending planner decision"],
+    ["Approved actuals", (counts.approved || 0) + (counts.exported || 0), "Approved or exported"]
   ];
   $("#metrics").innerHTML = metrics.map(([label, value, sub]) => `<div class="metric"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`).join("");
   $("#recent-events").innerHTML = state.events.length ? state.events.slice(0, 5).map(eventRow).join("") : empty("No field events yet", "Capture a report to see its extracted events here.");
   const action = $("#work-queue-action");
   if (!schedule) {
-    $("#work-queue-title").textContent = "Load a schedule";
-    $("#work-queue-copy").textContent = "The activity list gives field reports a plan to link to.";
+    $("#work-queue-title").textContent = "Import your schedule";
+    $("#work-queue-copy").textContent = "Connect a schedule to start linking field reports to its activities.";
     action.dataset.goto = "schedule";
     action.textContent = "Open schedule →";
   } else if (pending) {
     $("#work-queue-title").textContent = `${pending} ${pending === 1 ? "event needs" : "events need"} a decision`;
-    $("#work-queue-copy").textContent = "Verify each schedule link and date, then approve an actual or keep a note.";
+    $("#work-queue-copy").textContent = "Check the source report, activity, and actual date before approval.";
     action.dataset.goto = "review";
     action.textContent = "Open review queue →";
   } else {
-    $("#work-queue-title").textContent = "Queue is clear";
-    $("#work-queue-copy").textContent = "New field notes will appear here when they need review.";
+    $("#work-queue-title").textContent = "You’re up to date";
+    $("#work-queue-copy").textContent = "Capture the next report to keep your project progress moving.";
     action.dataset.goto = "capture";
     action.textContent = "Write a field report →";
   }
 }
 
 function empty(title, message) {
-  return `<div class="empty"><strong>${safe(title)}</strong>${safe(message)}</div>`;
+  return `<div class="empty">${reportIcon}<strong>${safe(title)}</strong><span>${safe(message)}</span></div>`;
 }
 
 function eventRow(event) {
   const candidate = event.selected_activity || event.candidates?.[0]?.activity_id || "Unmatched";
-  return `<div class="event-row"><div class="event-body"><strong>${safe(event.text)}</strong><div class="event-meta"><small>${safe(candidate)} · ${displayDate(event.event_date)} · ${safe(event.kind.replaceAll("_", " "))}</small>${statusTag(event.status)}</div></div></div>`;
+  return `<div class="event-row"><div class="event-glyph">${reportIcon}</div><div class="event-body"><strong>${safe(event.text)}</strong><div class="event-meta"><small>${safe(candidate)} · ${displayDate(event.event_date)} · ${safe(event.kind.replaceAll("_", " "))}</small>${statusTag(event.status)}</div></div></div>`;
 }
 
 function renderReview() {
   const pending = state.events.filter(e => ["needs_review", "staged"].includes(e.status));
+  $("#review-count").textContent = pending.length;
   $("#review-list").innerHTML = pending.length ? pending.map(reviewCard).join("") : `<div class="panel">${empty("No decisions waiting", "New or uncertain field events will appear here.")}</div>`;
   $$(".approve-button").forEach(button => button.addEventListener("click", () => decide(button.dataset.id, button.dataset.action)));
   $$(".reject-button").forEach(button => button.addEventListener("click", () => decide(button.dataset.id, "reject")));
   $$(".clarify-button").forEach(button => button.addEventListener("click", () => clarify(button.dataset.id)));
+  $$(".candidate-choice").forEach(input => input.addEventListener("change", () => {
+    $(".candidate-select", input.closest(".review-card")).value = input.value;
+  }));
+  $$(".candidate-select").forEach(select => select.addEventListener("change", () => {
+    $$(".candidate-choice", select.closest(".review-card")).forEach(input => input.checked = input.value === select.value);
+  }));
 }
 
 function reviewCard(event) {
@@ -118,31 +151,42 @@ function reviewCard(event) {
   const options = (event.candidates || []).map(c => `<option value="${safe(c.activity_id)}">${safe(c.activity_id)} · ${safe(c.name)}</option>`).join("");
   const other = state.activities.filter(a => !suggested.has(a.external_id)).map(a => `<option value="${safe(a.external_id)}">${safe(a.external_id)} · ${safe(a.name)}</option>`).join("");
   const select = `<select class="candidate-select"><option value="">Choose activity</option>${options}${other}</select>`;
-  const warningList = (event.warnings || []).includes("Several activities are plausible")
-    ? event.warnings.filter(w => w !== "No reliable activity match") : (event.warnings || []);
-  const warnings = warningList.length ? `<div class="warning">${warningList.map(w => safe(w === "Event does not set an actual date" ? "This note will not update actual dates" : w)).join(" · ")}</div>` : "";
+  const warningList = (event.warnings || []).filter(w => w !== "AI suggestion requires planner confirmation" &&
+    !(w === "No reliable activity match" && event.warnings.includes("Several activities are plausible")));
+  const warnings = warningList.length ? `<div class="warning"><ul>${warningList.map(w => `<li>${safe(w === "Event does not set an actual date" ? "Keep this event as a progress note; it does not establish an actual date." : w)}</li>`).join("")}</ul></div>` : "";
   const top = event.candidates?.[0];
-  const evidence = top?.match_reason ? `<p class="match-evidence">Model rationale: ${safe(top.match_reason)}</p>`
-    : top?.evidence?.length ? `<p class="match-evidence">Matched words: ${safe(top.evidence.join(", "))}</p>` : "";
-  const aiLine = event.analysis_mode === "ai" ? `<p class="match-evidence">AI-assisted · ${safe(event.model_name || "model")}. Verify every proposed value.</p>` : "";
-  const question = event.clarification_question ? `<div class="warning">Clarify: ${safe(event.clarification_question)}</div>` : "";
-  const clarification = event.analysis_mode === "ai" ? `<div class="clarification"><label>${event.clarification_answer ? "Refine your answer" : "Add context from site"}<input class="clarification-answer" maxlength="400" placeholder="For example: north pipeline near Pump A" value="${safe(event.clarification_answer || "")}"></label><button class="button secondary clarify-button" data-id="${safe(event.id)}">Refine suggestion ↗</button></div>` : "";
-  return `<article class="panel review-card" data-event-id="${safe(event.id)}"><div class="review-head"><div><p class="eyebrow">${safe(event.kind.replaceAll("_", " ").toUpperCase())}</p><h2>Field statement</h2></div>${statusTag(event.status)}</div><blockquote>${safe(event.text)}</blockquote>${aiLine}${evidence}${question}${warnings}${clarification}<div class="review-details"><div class="detail"><small>Event date</small><strong>${displayDate(event.event_date)}</strong></div><div class="detail"><small>Discipline</small><strong>${safe(event.discipline || "Unspecified")}</strong></div><div class="detail"><small>Location</small><strong>${safe(event.location || "Unspecified")}</strong></div></div><div class="review-actions"><label>${isActual ? "Schedule activity" : "Related activity (optional)"}${select}</label><label>${isActual ? "Actual date" : "Reference date"}<input class="decision-date" type="date" value="${safe(event.event_date || "")}"></label><button class="button secondary reject-button" data-id="${safe(event.id)}">Reject</button><button class="button primary approve-button" data-action="${isActual ? "approve" : "record"}" data-id="${safe(event.id)}">${isActual ? "Approve" : "Save note"}</button></div><input class="decision-reason" placeholder="Add a decision note (optional)" aria-label="Decision note"></article>`;
+  const evidence = top?.match_reason && top.match_reason !== "Ranked by local cross-encoder"
+    ? `<p class="match-evidence">Matching context: ${safe(top.match_reason)}</p>`
+    : top?.evidence?.length ? `<p class="match-evidence">Related report terms: ${safe(top.evidence.join(", "))}</p>` : "";
+  const analysisDetails = event.analysis_mode === "ai" ? `<details class="analysis-details"><summary>Analysis details</summary><p>AI matching · ${safe(event.model_name || "model")} · Proposed values require planner confirmation.</p></details>` : "";
+  const question = event.clarification_question ? `<div class="warning">${safe(event.clarification_question)}</div>` : "";
+  const clarification = event.analysis_mode === "ai" ? `<div class="clarification"><label>${event.clarification_answer ? "Update field context" : "Add field context"}<input class="clarification-answer" maxlength="400" placeholder="e.g. North pipeline near Pump A" value="${safe(event.clarification_answer || "")}"></label><button class="button secondary clarify-button" data-id="${safe(event.id)}">Refine suggestions</button></div>` : "";
+  const shortlist = (event.candidates || []).slice(0, 3).map((candidate, index) => `<label class="candidate-option"><input type="radio" class="candidate-choice" name="activity-${safe(event.id)}" value="${safe(candidate.activity_id)}"><span><strong><span class="candidate-id">${safe(candidate.activity_id)}</span><span class="candidate-name">${safe(candidate.name)}</span></strong><small>${safe(candidate.wbs || "Imported schedule activity")}${index === 0 ? " · First suggestion" : ""}</small></span></label>`).join("");
+  const kind = event.kind.replaceAll("_", " ");
+  return `<article class="panel review-card" data-event-id="${safe(event.id)}"><div class="review-head"><h2>${safe(kind.charAt(0).toUpperCase() + kind.slice(1))}</h2>${statusTag(event.status)}</div><div class="review-layout"><div class="review-source"><span class="review-label">Source report</span><blockquote>${safe(event.text)}</blockquote><div class="review-details"><div class="detail"><small>Reported date</small><strong>${displayDate(event.event_date)}</strong></div><div class="detail"><small>Discipline</small><strong>${safe(event.discipline || "Not specified")}</strong></div><div class="detail"><small>Work area</small><strong>${safe(event.location || "Not specified")}</strong></div></div>${analysisDetails}${warnings}${question}${clarification}</div><div class="review-proposal"><span class="review-label">Suggested activities · Select one to confirm</span><div class="candidate-shortlist">${shortlist || '<p class="muted">Choose an activity from the imported schedule.</p>'}</div>${evidence}<div class="review-fields"><label>${isActual ? "Schedule activity" : "Related activity (optional)"}${select}</label><label>${isActual ? "Actual date" : "Reference date"}<input class="decision-date" type="date" value="${safe(event.event_date || "")}"></label></div><label class="decision-note">Decision note <span class="optional">Optional</span><input class="decision-reason" placeholder="Add context for the planning team" aria-label="Decision note"></label></div></div><div class="review-actions"><span class="decision-help">Confirm the activity and date before approving.</span><button class="button secondary reject-button" data-id="${safe(event.id)}">Reject event</button><button class="button primary approve-button" data-action="${isActual ? "approve" : "record"}" data-id="${safe(event.id)}">${isActual ? "Approve actual" : "Record note"}</button></div></article>`;
 }
 
 async function clarify(id) {
   const card = $(`.review-card[data-event-id="${id}"]`);
+  const button = $(".clarify-button", card);
+  if (button.disabled) return;
   const answer = $(".clarification-answer", card).value.trim();
   if (!answer) return toast("Add context from the field first.", true);
+  button.disabled = true;
+  button.textContent = "Refining…";
   try {
     await post(`/api/events/${id}/clarify`, { answer });
     toast("Suggestion refined. Check the activity and date before deciding.");
     await refresh();
   } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; button.textContent = "Refine suggestions"; }
 }
 
 async function decide(id, action) {
   const card = $(`.review-card[data-event-id="${id}"]`);
+  const buttons = $$(".approve-button, .reject-button", card);
+  if (buttons.some(button => button.disabled)) return;
+  buttons.forEach(button => button.disabled = true);
   try {
     const result = await post(`/api/events/${id}/decision`, {
       action,
@@ -154,6 +198,7 @@ async function decide(id, action) {
     toast(`Event ${result.status}.`);
     await refresh();
   } catch (error) { toast(error.message, true); }
+  finally { buttons.forEach(button => button.disabled = false); }
 }
 
 function renderSchedule() {
@@ -162,12 +207,20 @@ function renderSchedule() {
   $("#schedule-meta").textContent = schedule ? `${schedule.format.toUpperCase()} · ${schedule.activity_count} activities · imported ${displayDate(schedule.created_at)}` : "Import an XER or CSV schedule to begin.";
   const query = $("#schedule-search").value.toLowerCase().trim();
   const rows = state.activities.filter(a => !query || `${a.external_id} ${a.name} ${a.wbs}`.toLowerCase().includes(query));
+  $("#schedule-result-count").textContent = `${rows.length} ${rows.length === 1 ? "activity" : "activities"}`;
   const status = value => ({ TK_Active: "In progress", TK_NotStart: "Not started", TK_Complete: "Complete" }[value] || value || "—");
   $("#schedule-rows").innerHTML = rows.length ? rows.map(a => `<tr><td><strong>${safe(a.external_id)}</strong>${safe(a.name)}</td><td>${safe(a.wbs || "—")}</td><td>${displayDate(a.planned_start)}</td><td>${displayDate(a.planned_finish)}</td><td>${safe(status(a.status))}</td></tr>`).join("") : `<tr><td colspan="5">${state.activities.length ? "No matching activities." : "No schedule activities yet."}</td></tr>`;
 }
 
 function renderHistory() {
-  $("#history-list").innerHTML = state.events.length ? state.events.map(eventRow).join("") : empty("No events recorded", "Events from reports will appear here.");
+  const query = $("#history-search").value.trim().toLowerCase();
+  const filter = $("#history-filter").value;
+  const events = state.events.filter(event => {
+    const statusMatches = filter === "all" || (filter === "pending" ? ["needs_review", "staged"].includes(event.status) : event.status === filter);
+    const searchText = [event.text, event.selected_activity, ...(event.candidates || []).map(candidate => candidate.activity_id)].join(" ").toLowerCase();
+    return statusMatches && (!query || searchText.includes(query));
+  });
+  $("#history-list").innerHTML = events.length ? events.map(eventRow).join("") : empty(state.events.length ? "No matching progress records" : "No progress records yet", state.events.length ? "Try another search or review status." : "Capture a field report to start your project history.");
 }
 
 function renderExports() {
@@ -178,12 +231,18 @@ function renderExports() {
 
 async function importFile(file) {
   if (!file) return;
+  const button = $("#import-schedule");
+  if (button.disabled) return;
+  const label = button.innerHTML;
+  button.disabled = true;
+  button.textContent = "Importing schedule…";
   try {
     const result = await post("/api/schedules/import", { filename: file.name, content: await file.text() });
     toast(`Imported ${result.activity_count} activities.`);
     await refresh();
     go("schedule");
   } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; button.innerHTML = label; $("#schedule-file").value = ""; }
 }
 
 async function uploadSpreadsheet(file) {
@@ -192,7 +251,7 @@ async function uploadSpreadsheet(file) {
   state.processing = true;
   const button = $("#upload-spreadsheet");
   button.disabled = true;
-  const label = button.textContent;
+  const label = button.innerHTML;
   button.textContent = "Analyzing file…";
   try {
     const result = await post("/api/reports", { source_kind: "spreadsheet", filename: file.name,
@@ -201,7 +260,7 @@ async function uploadSpreadsheet(file) {
     await refresh();
     go("review");
   } catch (error) { toast(error.message, true); }
-  finally { state.processing = false; button.disabled = false; button.textContent = label; $("#spreadsheet-file").value = ""; }
+  finally { state.processing = false; button.disabled = false; button.innerHTML = label; $("#spreadsheet-file").value = ""; }
 }
 
 async function uploadDocument(file) {
@@ -210,7 +269,7 @@ async function uploadDocument(file) {
   state.processing = true;
   const button = $("#upload-document");
   button.disabled = true;
-  const label = button.textContent;
+  const label = button.innerHTML;
   button.textContent = "Analyzing file…";
   try {
     if (file.size > 2_000_000) throw new Error("Choose a report file smaller than 2 MB.");
@@ -225,7 +284,7 @@ async function uploadDocument(file) {
     toast(`Processed ${result.events.length} events from ${file.name}.`);
     await refresh(); go("review");
   } catch (error) { toast(error.message, true); }
-  finally { state.processing = false; button.disabled = false; button.textContent = label; $("#document-file").value = ""; }
+  finally { state.processing = false; button.disabled = false; button.innerHTML = label; $("#document-file").value = ""; }
 }
 
 async function submitReport(event) {
@@ -246,7 +305,7 @@ async function submitReport(event) {
       discipline: $("#report-discipline").value,
       location: $("#report-location").value
     });
-    $("#capture-result").innerHTML = `<div class="panel"><p class="eyebrow">${result.analysis_mode === "ai" ? "AI PROPOSALS READY" : "PROCESSING COMPLETE"}</p><h2>${result.events.length} event${result.events.length === 1 ? "" : "s"} extracted</h2>${result.events.map(e => `<div class="event-row"><div class="event-glyph">◇</div><div class="event-body"><strong>${safe(e.text)}</strong><div class="event-meta"><small>${safe(e.candidates[0]?.activity_id || "Unmatched")} · ${displayDate(e.event_date)}</small>${statusTag(e.status)}</div></div></div>`).join("")}<div class="divider"></div><button class="button secondary" id="result-review">Open planner review →</button></div>`;
+    $("#capture-result").innerHTML = `<div class="panel"><p class="eyebrow">Report analyzed</p><h2>${result.events.length} progress event${result.events.length === 1 ? "" : "s"} ready for review</h2>${result.events.map(e => `<div class="event-row"><div class="event-glyph">${reportIcon}</div><div class="event-body"><strong>${safe(e.text)}</strong><div class="event-meta"><small>${safe(e.candidates[0]?.activity_id || "Unmatched")} · ${displayDate(e.event_date)}</small>${statusTag(e.status)}</div></div></div>`).join("")}<div class="divider"></div><button class="button primary" id="result-review">Review suggestions →</button></div>`;
     $("#result-review").addEventListener("click", () => go("review"));
     $("#report-text").value = "";
     toast(`Processed ${result.events.length} event${result.events.length === 1 ? "" : "s"}.`);
@@ -256,20 +315,30 @@ async function submitReport(event) {
 }
 
 async function loadDemo() {
+  const button = $("#load-demo");
+  if (button.disabled) return;
+  button.disabled = true;
   try {
     const result = await post("/api/demo/load");
     toast(`Sample project loaded: ${result.activity_count} activities.`);
     await refresh();
   } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
 }
 
 async function createExport() {
+  const button = $("#create-export");
+  if (button.disabled) return;
+  const label = button.innerHTML;
+  button.disabled = true;
+  button.textContent = "Preparing export…";
   try {
     const result = await post("/api/exports");
-    $("#export-result").innerHTML = `<div class="result-card"><strong>Export ready</strong><p>${result.manifest.row_count} approved ${result.manifest.row_count === 1 ? "event" : "events"} · source checksum ${safe(result.manifest.source_checksum.slice(0, 12))}…</p><a href="${safe(result.download)}">Download progress CSV →</a></div>`;
+    $("#export-result").innerHTML = `<div class="result-card"><strong>Your export is ready</strong><p>${result.manifest.row_count} approved ${result.manifest.row_count === 1 ? "event" : "events"}, with source and approval references.</p><a href="${safe(result.download)}">Download progress CSV →</a></div>`;
     toast("Export created.");
     await refresh();
   } catch (error) { toast(error.message, true); }
+  finally { button.innerHTML = label; renderExports(); }
 }
 
 function bind() {
@@ -290,9 +359,23 @@ function bind() {
   $("#upload-document").addEventListener("click", () => $("#document-file").click());
   $("#document-file").addEventListener("change", e => uploadDocument(e.target.files[0]));
   $("#schedule-search").addEventListener("input", renderSchedule);
+  $("#history-search").addEventListener("input", renderHistory);
+  $("#history-filter").addEventListener("change", renderHistory);
   $("#create-export").addEventListener("click", createExport);
+  $("#mobile-nav-toggle").addEventListener("click", () => setNavigation(!document.body.classList.contains("nav-open")));
+  $("#nav-backdrop").addEventListener("click", () => setNavigation(false));
+  mobileNavigation.addEventListener("change", () => setNavigation(false));
+  window.addEventListener("popstate", () => go(location.hash.slice(1) || "overview", false));
+  window.addEventListener("hashchange", () => go(location.hash.slice(1) || "overview", false));
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && document.body.classList.contains("nav-open")) {
+      setNavigation(false); $("#mobile-nav-toggle").focus();
+    }
+  });
 }
 
 bind();
-refreshAiStatus().catch(error => $("#ai-status").textContent = error.message);
+setNavigation(false);
+go(labels[location.hash.slice(1)] ? location.hash.slice(1) : "overview", false);
+refreshAiStatus().catch(() => $("#ai-status").textContent = "AI availability could not be checked. Standard matching is available.");
 refresh().catch(error => toast(error.message, true));

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 640" fill="none">
+  <!-- Field pipework connects to a schedule on the opposite edge of the hero. -->
+  <g stroke="#B7C9E8" stroke-width="1">
+    <path d="M32 100h152M58 80v280M20 386h184M1244 270h156M1390 252v264" stroke-dasharray="4 7"/>
+    <path d="M49 100h18m-9-9v18M1381 270h18m-9-9v18"/>
+  </g>
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <path d="M-20 172h116a28 28 0 0 1 28 28v182a28 28 0 0 0 28 28h42" stroke="#B9CBE6" stroke-width="22"/>
+    <path d="M-20 172h116a28 28 0 0 1 28 28v182a28 28 0 0 0 28 28h42" stroke="#F4F7FC" stroke-width="16"/>
+    <path d="M194 410h35a28 28 0 0 1 28 28v73a30 30 0 0 0 30 30h859a30 30 0 0 0 30-30v-58a28 28 0 0 1 28-28h38" stroke="#CFDAED" stroke-width="2"/>
+    <path d="M194 410h35a28 28 0 0 1 28 28v73a30 30 0 0 0 30 30h859a30 30 0 0 0 30-30v-58a28 28 0 0 1 28-28h38" stroke="#90ADE0" stroke-width="2" stroke-dasharray="5 10"/>
+  </g>
+  <!-- Flanges and a hand-operated valve identify the field side. -->
+  <g fill="#F8FAFE" stroke="#B9CBE6" stroke-width="2">
+    <rect x="111" y="239" width="26" height="9" rx="2"/>
+    <rect x="111" y="278" width="26" height="9" rx="2"/>
+    <path d="m109 251 15 10 15-10v24l-15-10-15 10Z"/>
+    <path d="M139 263h23m-4-18v36"/>
+    <ellipse cx="158" cy="263" rx="5" ry="18"/>
+    <rect x="178" y="394" width="9" height="32" rx="2"/>
+  </g>
+  <!-- A schedule display represents the planning workspace. -->
+  <g stroke="#B9CBE6" stroke-width="2" stroke-linejoin="round">
+    <rect x="1242" y="308" width="160" height="108" rx="8" fill="#F8FAFE"/>
+    <path d="M1242 333h160M1284 333v68M1311 416v26h22v-26M1293 442h59"/>
+    <path d="M1254 321h4m8 0h4M1254 347h17m-17 18h17m-17 18h17" stroke-linecap="round"/>
+    <path d="M1300 343v48M1324 343v48M1348 343v48M1372 343v48" stroke="#E2EAF7"/>
+    <path d="M1297 351h29m-16 18h36m-13 18h42" stroke="#AEC4E9" stroke-width="6" stroke-linecap="round"/>
+  </g>
+</svg>

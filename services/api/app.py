@@ -531,7 +531,8 @@ class Handler(BaseHTTPRequestHandler):
                       "/app.js": ("app.js", "text/javascript"),
                       "/styles.css": ("styles.css", "text/css"),
                       "/brand/carrick-mark.svg": ("brand/carrick-mark.svg", "image/svg+xml"),
-                      "/brand/carrick-logo.svg": ("brand/carrick-logo.svg", "image/svg+xml")}
+                      "/brand/carrick-logo.svg": ("brand/carrick-logo.svg", "image/svg+xml"),
+                      "/brand/field-to-schedule.svg": ("brand/field-to-schedule.svg", "image/svg+xml")}
             if path in static:
                 filename, content_type = static[path]
                 body = (WEB / filename).read_bytes()

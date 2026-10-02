@@ -1,162 +1,183 @@
-const steps = [
-  {
-    kicker: 'FROM THE FIELD', title: 'Keep the language natural.',
-    copy: 'A supervisor can write a simple progress note. The original wording remains attached to the event.',
-    visual: '<div class="stage-paper"><span class="micro">FIELD REPORT / 01</span><p class="quote">“North pipeline welding started today.”</p><div class="paper-rule">Received from site · Piping works</div></div>'
-  },
-  {
-    kicker: 'SCHEDULE CONTEXT', title: 'Find the work behind the words.',
-    copy: 'Carrick ranks activities from the imported schedule and shows the evidence behind each suggestion.',
-    visual: '<div class="stage-card"><span class="micro">FIRST SUGGESTION</span><strong>Weld North Pipeline</strong><small>PI–301 / Piping Works</small><br><span class="tag">shared terms: north · pipe · weld</span></div><div class="stage-card"><span class="micro">ALSO CONSIDERED</span><strong>Weld South Pipeline</strong><small>PI–302 / Piping Works</small></div>'
-  },
-  {
-    kicker: 'HUMAN DECISION', title: 'Make the call with context.',
-    copy: 'A planner can confirm the activity and actual date, record a note, or reject a proposed update.',
-    visual: '<div class="stage-review"><div><span>FIELD EVIDENCE</span><strong>Welding started</strong></div><div><span>PROPOSED ACTIVITY</span><strong>PI–301</strong></div><div class="approved"><span>PLANNER DECISION</span><strong>Approve / Record / Reject</strong></div></div>'
-  },
-  {
-    kicker: 'TRACEABLE OUTPUT', title: 'Carry approved progress forward.',
-    copy: 'Approved actuals become a CSV with the activity, date, source report, and approval trail. The imported schedule stays unchanged.',
-    visual: '<div class="stage-export"><div><span>APPROVED PROGRESS.CSV</span><span>↗</span></div><div><span>Activity</span><b>PI–301</b></div><div><span>Event</span><b>Actual start</b></div><div><span>Source</span><b>Field report</b></div><div><span>Decision</span><b>Approved by planner</b></div></div>'
-  }
-];
+const $ = selector => document.querySelector(selector);
+const safe = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+const formatDate = value => {
+  if (!value) return 'Date not specified';
+  const parsed = new Date(value.slice(0, 10) + 'T12:00:00');
+  return Number.isNaN(parsed.getTime()) ? value : new Intl.DateTimeFormat('en-GB', {day:'numeric',month:'short',year:'numeric'}).format(parsed);
+};
+const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+const tomorrow = new Date(today + 'T12:00:00');
+tomorrow.setDate(tomorrow.getDate() + 1);
+const tomorrowISO = new Intl.DateTimeFormat('sv-SE', {year:'numeric',month:'2-digit',day:'2-digit'}).format(tomorrow);
+$('#preview-date').value = today;
+$('#copyright-year').textContent = new Date().getFullYear();
 
-const tabs = Array.from(document.querySelectorAll('.step'));
-function showStep(index, focus = false) {
-  const step = steps[index];
-  if (!step) return;
-  tabs.forEach((tab, i) => {
-    const active = i === index;
-    tab.classList.toggle('active', active);
+const samples = [
+  {title:'North pipeline welding', text:'North pipeline welding started today.', kind:'actual_start', event_date:today,
+    discipline:'Piping', location:'North pipeline', warnings:[],
+    candidates:[{activity_id:'PI-301',name:'Weld North Pipeline',wbs:'Piping Works',evidence:['north','pipe','weld']},
+      {activity_id:'PI-302',name:'Weld South Pipeline',wbs:'Piping Works',evidence:['pipe','weld']}]},
+  {title:'Main foundation concrete', text:'Finished pouring the main foundation today.', kind:'actual_finish', event_date:today,
+    discipline:'Civil', location:'Main foundation', warnings:[],
+    candidates:[{activity_id:'CV-102',name:'Main Foundation Concrete Pour',wbs:'Civil Works',evidence:['main','foundation','pour']},
+      {activity_id:'CV-103',name:'Cure Main Foundation',wbs:'Civil Works',evidence:['main','foundation']}]},
+  {title:'Pump A installation', text:'Pump A will finish tomorrow.', kind:'forecast_finish', event_date:tomorrowISO,
+    discipline:'Mechanical', location:'Pump A', warnings:['This is a forecast, so it does not set an actual finish date.'],
+    candidates:[{activity_id:'ME-201',name:'Install Pump A',wbs:'Mechanical Works',evidence:['pump']},
+      {activity_id:'ME-202',name:'Install Pump B',wbs:'Mechanical Works',evidence:['pump']}]}
+];
+let current = {...samples[0]};
+let stage = 'review';
+let confirmed = false;
+let processing = false;
+let requestNumber = 0;
+let controller;
+const stages = {
+  capture:{breadcrumb:'Capture report', label:'Field reporting', caption:'Start with the words your site team already uses. Add a report date for context.'},
+  match:{breadcrumb:'Activity matching',label:'Schedule context',caption:'Compare suggested activities from the imported schedule before choosing the right one.'},
+  review:{breadcrumb:'Planner review',label:'Report review',caption:'Review the report alongside the proposed activity and actual date.'}
+};
+const tabs = [...document.querySelectorAll('[data-stage]')];
+const kindLabels = {actual_start:'Proposed actual start',actual_finish:'Proposed actual finish',forecast_start:'Forecast start',forecast_finish:'Forecast finish',in_progress:'Progress reported',not_started:'Not started',partial_progress:'Partial progress',blocked:'Blocker reported',unknown:'Date from report'};
+const check = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>';
+const arrow = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg>';
+
+function renderTour() {
+  const actual = current.kind === 'actual_start' || current.kind === 'actual_finish';
+  const ambiguous = current.warnings?.includes('Several activities are plausible');
+  $('#tour-panel').dataset.stage = stage;
+  $('#tour-panel').setAttribute('aria-labelledby', 'tour-tab-' + stage);
+  $('#demo-breadcrumb').textContent = stages[stage].breadcrumb;
+  $('#demo-stage-label').textContent = stages[stage].label;
+  $('#tour-caption').textContent = stages[stage].caption;
+  tabs.forEach(tab => {
+    const active = tab.dataset.stage === stage;
     tab.setAttribute('aria-selected', String(active));
     tab.tabIndex = active ? 0 : -1;
   });
-  const panel = document.getElementById('step-panel');
-  panel.setAttribute('aria-labelledby', tabs[index].id);
-  document.getElementById('stage-counter').textContent = `STAGE 0${index + 1} / 04`;
-  document.getElementById('stage-kicker').textContent = step.kicker;
-  document.getElementById('stage-title').textContent = step.title;
-  document.getElementById('stage-copy').textContent = step.copy;
-  document.getElementById('stage-visual').innerHTML = step.visual;
-  if (focus) tabs[index].focus();
+  $('#demo-title').textContent = current.title;
+  $('#demo-quote').textContent = current.text;
+  $('#demo-quote').hidden = stage === 'capture';
+  $('#demo-editor').hidden = stage !== 'capture';
+  $('#source-details').hidden = stage === 'capture';
+  $('#demo-discipline').textContent = current.discipline || 'Not specified';
+  $('#demo-location').textContent = current.location || 'Not specified';
+  $('#demo-date').textContent = formatDate($('#preview-date').value);
+  $('#demo-event-label').textContent = kindLabels[current.kind] || 'Reported date';
+  $('#demo-proposed-date').textContent = formatDate(current.event_date);
+  const status = $('#demo-status');
+  status.className = 'pill ' + (confirmed ? 'approved' : actual ? 'pending' : 'forecast');
+  status.innerHTML = '<span></span>' + (confirmed ? actual ? 'Confirmed in tour' : 'Forecast recorded' : actual ? 'Awaiting review' : 'Forecast only');
+  const candidates = current.candidates || [];
+  $('#demo-candidates').innerHTML = candidates.length ? candidates.slice(0, stage === 'match' || ambiguous ? 2 : 1).map((candidate, index) =>
+    '<div class="activity-suggestion' + (index ? ' alternative' : '') + '"><div><span class="task-id">' + safe(candidate.activity_id) + '</span><span class="pill neutral">' + (index ? 'Alternative' : 'Suggested') + '</span></div><h3>' + safe(candidate.name) + '</h3><p>' + safe(candidate.wbs || 'Imported schedule activity') + '</p>' + (!index ? '<div class="matching-context">' + check + '<span>' + (candidate.evidence?.length ? 'Report terms: ' + safe(candidate.evidence.join(', ')) : 'Check activity and location before approval') + '</span></div>' : '') + '</div>'
+  ).join('') : '<div class="activity-suggestion"><h3>No activity suggestion</h3><p>Add an activity name or location to your note.</p></div>';
+  const warnings = (current.warnings || []).filter(warning => warning !== 'Event does not set an actual date');
+  if (!actual && !warnings.length) warnings.push('This report does not establish an actual start or finish.');
+  $('#demo-warning').hidden = !warnings.length;
+  $('#demo-warning').textContent = warnings.join(' ');
+  $('#demo-decision').hidden = stage !== 'review' || !candidates.length;
+  const approve = $('#demo-approve');
+  approve.disabled = confirmed || (actual && (!current.event_date || ambiguous));
+  approve.innerHTML = check + (confirmed ? ' Confirmed' : actual ? ' Confirm in tour' : ' Keep forecast in tour');
+  $('#demo-feedback').hidden = !confirmed;
+  $('#demo-feedback').textContent = actual ? 'Sample decision complete. No report is saved and no schedule is changed.' : 'Forecast kept as a note. It does not enter an actual-date export.';
+  $('#demo-final-step').innerHTML = confirmed ? check + ' Review complete' : '<span class="progress-ring"></span> Planner review';
+  $('#demo-final-step').classList.toggle('completed', confirmed);
+}
+
+function showStage(value, focus = false) {
+  if (!stages[value]) return;
+  stage = value;
+  renderTour();
+  if (focus) $('#tour-tab-' + value).focus();
 }
 tabs.forEach((tab, index) => {
-  tab.addEventListener('click', () => showStep(index));
+  tab.addEventListener('click', () => showStage(tab.dataset.stage));
   tab.addEventListener('keydown', event => {
-    const move = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 :
-      event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 0;
-    if (move) {
-      event.preventDefault();
-      showStep((index + move + tabs.length) % tabs.length, true);
-    }
+    let next;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % tabs.length;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index - 1 + tabs.length) % tabs.length;
+    if (event.key === 'Home') next = 0;
+    if (event.key === 'End') next = tabs.length - 1;
+    if (next !== undefined) { event.preventDefault(); showStage(tabs[next].dataset.stage, true); }
   });
 });
-showStep(0);
 
-const menuButton = document.querySelector('.menu-toggle');
-const mobileMenu = document.getElementById('mobile-menu');
-menuButton.addEventListener('click', () => {
-  const opened = menuButton.getAttribute('aria-expanded') === 'true';
-  menuButton.setAttribute('aria-expanded', String(!opened));
-  menuButton.setAttribute('aria-label', opened ? 'Open menu' : 'Close menu');
-  mobileMenu.hidden = opened;
-});
-mobileMenu.querySelectorAll('a').forEach(link => link.addEventListener('click', () => {
-  mobileMenu.hidden = true;
-  menuButton.setAttribute('aria-expanded', 'false');
-  menuButton.setAttribute('aria-label', 'Open menu');
-}));
-
-const note = document.getElementById('preview-note');
-const dateInput = document.getElementById('preview-date');
-const previewButton = document.getElementById('preview-button');
-const result = document.getElementById('preview-result');
-const outputState = document.getElementById('output-state');
-const today = new Date();
-dateInput.value = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-
-document.querySelectorAll('[data-note]').forEach(button => button.addEventListener('click', () => {
-  note.value = button.dataset.note;
-  note.focus();
-  runPreview();
-}));
-
-function element(tag, className, value) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (value !== undefined) node.textContent = value;
-  return node;
+function resetPreviewButton() {
+  processing = false;
+  $('#preview-button').disabled = false;
+  $('#preview-button').innerHTML = 'Find activity ' + arrow;
 }
-
-const kindLabels = {
-  actual_start: 'ACTUAL START', actual_finish: 'ACTUAL FINISH',
-  forecast_start: 'FORECAST START', forecast_finish: 'FORECAST FINISH',
-  in_progress: 'IN PROGRESS', not_started: 'NOT STARTED',
-  partial_progress: 'PARTIAL PROGRESS', blocked: 'BLOCKED', unknown: 'UNCLASSIFIED'
-};
-
-function renderPreview(data) {
-  result.replaceChildren();
-  const event = data.events[0];
-  if (!event) {
-    result.append(element('p', 'result-error', 'No progress event found in that note.'));
-    outputState.textContent = 'REVIEW NEEDED';
-    return;
-  }
-  const wrap = element('div', 'result-content');
-  wrap.append(element('span', 'result-kind', kindLabels[event.kind] || 'FIELD EVENT'));
-  wrap.append(element('p', 'result-event', `“${event.text}”`));
-  const candidates = event.candidates || [];
-  candidates.slice(0, event.warnings.includes('Several activities are plausible') ? 2 : 1).forEach((candidate, index) => {
-    const card = element('div', `result-candidate${index ? ' secondary' : ''}`);
-    const top = element('div', 'candidate-top');
-    top.append(element('span', '', index ? 'ALSO POSSIBLE' : 'SUGGESTED ACTIVITY'));
-    top.append(element('span', '', candidate.activity_id));
-    card.append(top, element('h3', '', candidate.name));
-    const details = candidate.evidence?.length ? `Shared words: ${candidate.evidence.join(', ')}` : 'Review the activity context';
-    card.append(element('p', '', details));
-    wrap.append(card);
+document.querySelectorAll('[data-sample]').forEach(button => button.addEventListener('click', () => {
+  controller?.abort();
+  requestNumber++;
+  resetPreviewButton();
+  current = {...samples[Number(button.dataset.sample)]};
+  confirmed = false;
+  $('#preview-note').value = current.text;
+  $('#preview-date').value = today;
+  document.querySelectorAll('[data-sample]').forEach(item => {
+    const selected = item === button;
+    item.classList.toggle('active', selected);
+    item.setAttribute('aria-pressed', String(selected));
   });
-  const flags = element('div', 'result-warnings');
-  if (event.warnings.length) {
-    event.warnings.forEach(warning => flags.append(element('span', '', warning)));
-  } else {
-    flags.append(element('span', 'clear', 'Ready for planner review'));
-  }
-  wrap.append(flags);
-  wrap.append(element('p', 'result-note', event.event_date ? `Interpreted date: ${event.event_date}. Preview only; no schedule is changed.` : 'No actual date was established. Preview only; no schedule is changed.'));
-  if (data.events.length > 1) wrap.append(element('p', 'result-note', `${data.events.length - 1} more event${data.events.length > 2 ? 's' : ''} found. Open the workspace to review a full report.`));
-  result.append(wrap);
-  outputState.textContent = event.warnings.length ? 'REVIEW FLAGGED' : 'LINK PROPOSED';
-}
+  renderTour();
+}));
+$('#demo-approve').addEventListener('click', () => { confirmed = true; renderTour(); });
+$('#try-custom-note').addEventListener('click', () => {
+  showStage('capture');
+  $('#preview-note').focus({preventScroll:true});
+  $('#product').scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'});
+});
+document.querySelectorAll('[data-tour-stage]').forEach(link => link.addEventListener('click', () => showStage(link.dataset.tourStage)));
 
 async function runPreview() {
-  if (!note.value.trim()) {
-    result.replaceChildren(element('p', 'result-error', 'Write a note to see a schedule suggestion.'));
-    outputState.textContent = 'NOTE NEEDED';
-    note.focus();
-    return;
-  }
-  previewButton.disabled = true;
-  previewButton.firstChild.textContent = 'Finding the link ';
-  outputState.textContent = 'READING NOTE';
+  if (processing) return;
+  const text = $('#preview-note').value.trim();
+  if (!text) { $('#preview-note').focus(); $('#demo-warning').hidden = false; $('#demo-warning').textContent = 'Enter a field update to find a schedule activity.'; return; }
+  const thisRequest = ++requestNumber;
+  controller = new AbortController();
+  processing = true;
+  $('#preview-button').disabled = true;
+  $('#preview-button').textContent = 'Finding activity…';
+  $('#demo-warning').hidden = true;
   try {
-    const response = await fetch('/api/preview', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({content: note.value, event_date: dateInput.value})
-    });
+    const response = await fetch('/api/preview', {method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,
+      body:JSON.stringify({content:text,event_date:$('#preview-date').value})});
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'The preview could not be completed.');
-    renderPreview(data);
+    if (!response.ok) throw new Error(data.error || 'The preview could not be completed. Try again.');
+    if (thisRequest !== requestNumber) return;
+    if (!data.events?.length) throw new Error('No progress claim was found. Add the work that started, finished, or changed.');
+    const event = data.events[0];
+    current = {...event,title:event.candidates?.[0]?.name || 'Field update',discipline:event.discipline,location:event.location};
+    confirmed = false;
+    document.querySelectorAll('[data-sample]').forEach(button => { button.classList.remove('active'); button.setAttribute('aria-pressed','false'); });
+    showStage('match');
   } catch (error) {
-    result.replaceChildren(element('p', 'result-error', error.message));
-    outputState.textContent = 'TRY AGAIN';
-  } finally {
-    previewButton.disabled = false;
-    previewButton.firstChild.textContent = 'Find the schedule link ';
-  }
+    if (error.name !== 'AbortError' && thisRequest === requestNumber) {
+      $('#demo-warning').hidden = false;
+      $('#demo-warning').textContent = error.message;
+    }
+  } finally { if (thisRequest === requestNumber) resetPreviewButton(); }
 }
-previewButton.addEventListener('click', runPreview);
-note.addEventListener('keydown', event => {
-  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') runPreview();
+$('#preview-button').addEventListener('click', runPreview);
+$('#preview-note').addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); runPreview(); }
 });
+const menuButton = $('.menu-toggle');
+const mobileMenu = $('#mobile-menu');
+function closeMenu() {
+  mobileMenu.hidden = true;
+  menuButton.setAttribute('aria-expanded','false');
+  menuButton.setAttribute('aria-label','Open navigation');
+}
+menuButton.addEventListener('click', () => {
+  const open = menuButton.getAttribute('aria-expanded') !== 'true';
+  mobileMenu.hidden = !open;
+  menuButton.setAttribute('aria-expanded',String(open));
+  menuButton.setAttribute('aria-label',open ? 'Close navigation' : 'Open navigation');
+});
+mobileMenu.querySelectorAll('a').forEach(link => link.addEventListener('click',closeMenu));
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenu(); });
+renderTour();

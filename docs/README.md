@@ -19,3 +19,5 @@
 ## Status
 
 The repository now includes a local working slice. Architecture documents describe both the current implementation and the intended later system; the [roadmap](roadmap.md) records the gap. Numerical performance claims from the supplied research are hypotheses, not results.
+
+- [Website and workspace design](design/website-redesign.md): SaaS design research, interface decisions, and product language.
