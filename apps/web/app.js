@@ -1,4 +1,4 @@
-const state = { summary: null, activities: [], events: [], view: "overview", ai: null, processing: false };
+const state = { summary: null, activities: [], events: [], view: "overview", ai: null, processing: false, ready: false, refreshing: false, stale: false, exporting: false };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const safe = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
@@ -24,9 +24,12 @@ function setNavigation(open) {
 
 async function request(path, options = {}) {
   let response;
-  try { response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...window.CarrickAuth.headers(), ...options.headers } }); }
+  const timeout = AbortSignal.timeout(options.method === "POST" ? 90000 : 15000);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  try { response = await fetch(path, { ...options, signal, headers: { "Content-Type": "application/json", ...window.CarrickAuth.headers(), ...options.headers } }); }
   catch (failure) {
-    if (failure.name === "AbortError") throw failure;
+    if (options.signal?.aborted) throw failure;
+    if (timeout.aborted) throw new Error("The server is taking longer than expected. Retry when it responds. Saved reports are retained.");
     offline.setReachable(false);
     const error = new Error("The local server is unavailable. Your saved workspace can still be used offline.");
     error.transport = true;
@@ -34,7 +37,9 @@ async function request(path, options = {}) {
   }
   offline.setReachable(true);
   const contentType = response.headers.get("content-type") || "";
-  const data = contentType.includes("json") ? await response.json() : await response.text();
+  let data;
+  try { data = contentType.includes("json") ? await response.json() : await response.text(); }
+  catch (_) { throw new Error("The server returned an incomplete response. Retry loading; your saved work is retained."); }
   if (!response.ok) { const error = new Error(data.error || `Request failed (${response.status})`); error.status = response.status; error.code = data.code; error.data = data; if(response.status===401) window.CarrickAuth.showLogin("Your session expired. Sign in to retry saved reports."); throw error; }
   return data;
 }
@@ -43,10 +48,31 @@ const post = (path, body = {}) => request(path, { method: "POST", body: JSON.str
 let toastTimer;
 function toast(message, error = false) {
   const el = $("#toast");
-  el.textContent = message;
+  $("#toast-message").textContent = message;
   el.className = error ? "show error" : "show";
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.className = "", 4000);
+  if (!error) toastTimer = setTimeout(() => el.className = "", 5000);
+}
+
+function workspaceStatus(kind, title, copy) {
+  const panel = $("#workspace-status");
+  panel.hidden = !kind;
+  panel.dataset.state = kind || "";
+  $("#workspace-status-title").textContent = title || "";
+  $("#workspace-status-copy").textContent = copy || "";
+  $("#workspace-retry").hidden = !["error", "offline"].includes(kind);
+}
+
+function updateAvailability() {
+  $("#workspace-refresh").disabled = state.refreshing;
+  $("#workspace-retry").disabled = state.refreshing;
+  $("#report-form button[type=submit]").disabled = state.processing || !state.ready || !state.summary?.schedule;
+  $("#report-form").setAttribute("aria-busy", String(state.processing));
+  $$("input,textarea,select",$("#report-form")).forEach(input=>input.disabled=state.processing || input.id === "ai-mode" && !state.ai?.available);
+  $$(".example, #voice-use").forEach(button=>button.disabled=state.processing);
+  $("#report-form .form-footer .field-help").textContent = state.summary?.schedule ? "Your original report is retained." : "Import a schedule before submitting. You can save a draft while you wait.";
+  $$(".review-card").forEach(updateReviewAvailability);
+  renderExports();
 }
 
 function go(view, updateHistory = true) {
@@ -70,29 +96,54 @@ function go(view, updateHistory = true) {
   window.scrollTo({ top: 0, behavior: "instant" });
 }
 
+let refreshSequence = 0, refreshController;
 async function refresh() {
+  const sequence = ++refreshSequence;
+  refreshController?.abort();
+  refreshController = new AbortController();
+  const signal = refreshController.signal;
+  state.refreshing = true;
+  $(".content").setAttribute("aria-busy", "true");
+  workspaceStatus("loading", state.ready ? "Refreshing workspace" : "Loading workspace", state.ready ? "Your current view stays available while we check for updates." : "Getting your latest schedule and reports…");
+  updateAvailability();
   try {
     const [summary, activities, events] = await Promise.all([
-      request("/api/summary"), request("/api/activities"), request("/api/events")
+      request("/api/summary", {signal}), request("/api/activities", {signal}), request("/api/events", {signal})
     ]);
-    state.summary = summary; state.activities = activities; state.events = events;
+    if (sequence !== refreshSequence) return;
+    if (!summary || typeof summary !== "object" || !Array.isArray(activities) || !Array.isArray(events)) throw new Error("Workspace data could not be read. Retry loading.");
+    state.summary = summary; state.activities = activities; state.events = events; state.ready = true; state.stale = false;
+    $("#workspace-updated").textContent = `Updated ${new Intl.DateTimeFormat(undefined, {hour:"2-digit", minute:"2-digit"}).format(new Date())}`;
+    workspaceStatus(null);
     await offline.snapshot({ summary, activities, events }).catch(error => toast(error.message, true));
+    return true;
   } catch (error) {
-    if (!error.transport) throw error;
-    offline.setReachable(false);
-    const stored = await offline.get("snapshots", "workspace");
-    if (stored) Object.assign(state, stored.value);
-    else toast("No saved workspace yet. Connect to the server once to enable offline capture.");
+    if (sequence !== refreshSequence || signal.aborted) return;
+    state.stale = true;
+    if (!state.ready) {
+      try {
+        const stored = await offline.get("snapshots", "workspace");
+        if (stored) { Object.assign(state, stored.value); state.ready = true; $("#workspace-updated").textContent = `Saved workspace · ${displayDate(stored.savedAt)}`; }
+      } catch (storageError) { toast(storageError.message, true); }
+    }
+    workspaceStatus(error.transport ? "offline" : "error", state.ready ? "Showing saved workspace" : "Workspace could not load", `${error.message} ${state.ready ? "Approvals and exports will resume after a successful refresh." : "Use Retry loading to reconnect."}`);
+    return false;
+  } finally {
+    if (sequence === refreshSequence) {
+      state.refreshing = false;
+      $(".content").setAttribute("aria-busy", "false");
+      renderOverview(); renderReview(); renderSchedule(); renderExports();
+      if (state.view === "history") renderHistory();
+      renderDeviceReports(); updateAvailability();
+    }
   }
-  renderOverview(); renderReview(); renderSchedule(); renderHistory(); renderExports();
-  renderDeviceReports();
 }
 
 async function refreshAiStatus() {
   const status = await request("/api/ai/status");
   state.ai = status;
-  $("#ai-mode").disabled = !status.available;
-  $("#ai-mode").checked = status.available;
+  $("#ai-mode").disabled = !status.available || state.processing;
+  $("#ai-mode").checked = status.available && (state.aiPreferred ?? true);
   $("#ai-status").textContent = status.available
     ? (status.mode === "ollama" ? "Local AI uses schedule context. No cloud connection is needed." : "Schedule context helps interpret field language.")
     : "AI is unavailable. Standard matching is ready to use.";
@@ -106,7 +157,7 @@ async function refreshCaptureStatus() {
   $("#capture-engine-status").textContent = status.ocr.available
     ? "Printed scan OCR is configured on the local server."
     : "Printed scans need the optional local OCR engine. Text files and emails are ready to use.";
-  if (!status.voice.available) $("#voice-status").textContent = "Recording is available. Provision a local speech model to enable transcription.";
+  if (!status.voice.available && $("#voice-preview").hidden && $("#voice-record").getAttribute("aria-pressed") !== "true") $("#voice-status").textContent = "Recording is available. Provision a local speech model to enable transcription.";
 }
 
 function statusTag(status) {
@@ -115,6 +166,14 @@ function statusTag(status) {
 }
 
 function renderOverview() {
+  if (!state.ready) {
+    $("#welcome").hidden = true;
+    $("#metrics").innerHTML = ["Schedule activities","Field events","Awaiting review","Approved actuals"].map(label=>`<div class="metric"><div class="label">${label}</div><div class="value metric-placeholder">—</div><div class="sub">Waiting for workspace data</div></div>`).join("");
+    $("#recent-events").innerHTML = empty("Progress is not available yet", "Retry loading to see your project records.");
+    $("#work-queue-title").textContent = "Workspace unavailable";
+    $("#work-queue-copy").textContent = "Load project data before making a planning decision.";
+    return;
+  }
   const schedule = state.summary?.schedule;
   $("#welcome").hidden = Boolean(schedule);
   $("#schedule-chip").textContent = schedule ? `${schedule.filename} · ${schedule.activity_count} activities` : "No schedule loaded";
@@ -160,8 +219,31 @@ function eventRow(event) {
   return `<div class="event-row"><div class="event-glyph">${reportIcon}</div><div class="event-body"><strong>${safe(event.text)}</strong><div class="event-meta"><small>${safe(candidate)} · ${displayDate(event.event_date)} · ${safe(event.kind.replaceAll("_", " "))}</small>${statusTag(event.status)}</div></div></div>`;
 }
 
+const reviewDrafts = new Map(), pendingDecisions = new Set();
+function updateReviewAvailability(card) {
+  const allowed = state.ready && !state.stale && !state.refreshing && offline.reachable && ["owner","planner"].includes(window.CarrickAuth.project?.role);
+  const busy = pendingDecisions.has(card.dataset.eventId);
+  const signature = `${$(".candidate-select",card).value}|${$(".decision-date",card).value}`;
+  const checked = card.dataset.actual !== "true" || card.dataset.checked === signature && card.dataset.blocked === "false";
+  const noteReady = !$(".decision-reason",card).required || Boolean($(".decision-reason",card).value.trim());
+  $(".approve-button",card).disabled = !allowed || busy || !checked || !noteReady;
+  $(".reject-button",card).disabled = !allowed || busy;
+  $$("input,select,.clarify-button",card).forEach(input=>input.disabled = busy || input.classList.contains("clarify-button") && (!offline.reachable || state.stale));
+  card.setAttribute("aria-busy", String(busy));
+}
+
 function renderReview() {
+  $$(".review-card").forEach(card=>reviewDrafts.set(card.dataset.eventId, {
+    activity:$(".candidate-select",card).value, date:$(".decision-date",card).value,
+    reason:$(".decision-reason",card).value, answer:$(".clarification-answer",card)?.value,
+    version:card.dataset.scheduleVersion
+  }));
+  if (!state.ready) {
+    $("#review-list").innerHTML = `<div class="panel">${empty("Review queue is not available yet", "Load the workspace before making a decision.")}</div>`;
+    return;
+  }
   const pending = state.events.filter(e => ["needs_review", "staged"].includes(e.status));
+  for (const id of reviewDrafts.keys()) if (!pending.some(event=>event.id===id)) reviewDrafts.delete(id);
   $("#review-count").textContent = pending.length;
   $("#review-list").innerHTML = pending.length ? pending.map(reviewCard).join("") : `<div class="panel">${empty("No decisions waiting", "New or uncertain field events will appear here.")}</div>`;
   $$(".approve-button").forEach(button => button.addEventListener("click", () => decide(button.dataset.id, button.dataset.action)));
@@ -176,7 +258,21 @@ function renderReview() {
     checkDecision(select.closest(".review-card"));
   }));
   $$(".decision-date").forEach(input => input.addEventListener("change", () => checkDecision(input.closest(".review-card"))));
-  if (!offline.reachable || !["owner","planner"].includes(window.CarrickAuth.project?.role)) $$(".approve-button, .reject-button").forEach(button => button.disabled = true);
+  $$(".review-card").forEach(card=>{
+    card.dataset.actual = String(["actual_start","actual_finish"].includes(pending.find(event=>event.id===card.dataset.eventId).kind));
+    card.dataset.scheduleVersion = state.summary?.schedule?.id || "";
+    const draft = reviewDrafts.get(card.dataset.eventId);
+    if (draft?.version === card.dataset.scheduleVersion) {
+      $(".candidate-select",card).value = draft.activity;
+      $(".decision-date",card).value = draft.date;
+      $(".decision-reason",card).value = draft.reason;
+      if ($(".clarification-answer",card)) $(".clarification-answer",card).value = draft.answer || "";
+      $$(".candidate-choice",card).forEach(input=>input.checked=input.value===draft.activity);
+    }
+    $(".decision-reason",card).addEventListener("input",()=>updateReviewAvailability(card));
+    updateReviewAvailability(card);
+    if ($(".candidate-select",card).value && !state.stale && !pendingDecisions.has(card.dataset.eventId)) checkDecision(card);
+  });
 }
 
 async function checkDecision(card) {
@@ -184,21 +280,27 @@ async function checkDecision(card) {
   const panel = $(".proposal-checks",card);
   const revision = Number(card.dataset.checkRevision || 0)+1;
   card.dataset.checkRevision = revision;
+  delete card.dataset.checked;
+  const signature = `${$(".candidate-select",card).value}|${$(".decision-date",card).value}`;
   button.disabled = true;
   panel.textContent = "Checking the activity and date…";
   try {
     const result = await post(`/api/events/${card.dataset.eventId}/checks`, {
       activity_id: $(".candidate-select",card).value, event_date: $(".decision-date",card).value
     });
-    if (Number(card.dataset.checkRevision) !== revision) return;
+    if (!card.isConnected || Number(card.dataset.checkRevision) !== revision) return;
     panel.innerHTML = result.checks.length ? `<ul>${result.checks.map(check => `<li class="check-${safe(check.severity)}">${safe(check.message)}</li>`).join("")}</ul>` : "Activity and date pass the current checks.";
     $(".decision-note .optional",card).textContent = result.requires_reason ? "Required for these warnings" : "Optional";
     $(".decision-reason",card).required = result.requires_reason;
-    button.disabled = result.blocked || !offline.reachable || !["owner","planner"].includes(window.CarrickAuth.project?.role);
+    card.dataset.checked = signature;
+    card.dataset.blocked = String(result.blocked);
+    updateReviewAvailability(card);
   } catch (error) {
-    if (Number(card.dataset.checkRevision) !== revision) return;
+    if (!card.isConnected || Number(card.dataset.checkRevision) !== revision) return;
     panel.textContent = error.message;
-    button.disabled = !offline.reachable || !["owner","planner"].includes(window.CarrickAuth.project?.role);
+    const retry = document.createElement("button"); retry.type = "button"; retry.className = "text-button"; retry.textContent = "Retry checks";
+    retry.addEventListener("click",()=>checkDecision(card)); panel.append(retry);
+    button.disabled = true;
   }
 }
 
@@ -244,7 +346,12 @@ async function decide(id, action) {
   const card = $(`.review-card[data-event-id="${id}"]`);
   const buttons = $$(".approve-button, .reject-button", card);
   const clicked = action === "reject" ? $(".reject-button",card) : $(".approve-button",card);
-  if (clicked.disabled) return;
+  if (clicked.disabled || pendingDecisions.has(id)) return;
+  pendingDecisions.add(id);
+  $(".review-feedback",card)?.remove();
+  const label = clicked.textContent;
+  clicked.textContent = "Saving decision…";
+  updateReviewAvailability(card);
   buttons.forEach(button => button.disabled = true);
   try {
     const result = await post(`/api/events/${id}/decision`, {
@@ -255,12 +362,31 @@ async function decide(id, action) {
       actor: "Planner"
     });
     toast(`Event ${result.status}.`);
+    const event = state.events.find(item=>item.id===id);
+    if (event) event.status = result.status;
+    reviewDrafts.delete(id);
     await refresh();
-  } catch (error) { toast(error.message, true); }
-  finally { buttons.forEach(button => button.disabled = false); }
+  } catch (error) {
+    toast(error.message, true);
+    if (card.isConnected) {
+      let feedback = $(".review-feedback",card);
+      if (!feedback) { feedback = document.createElement("p"); feedback.className = "review-feedback"; feedback.setAttribute("role","alert"); card.append(feedback); }
+      feedback.textContent = error.message;
+    }
+  } finally {
+    pendingDecisions.delete(id);
+    if (card.isConnected) { clicked.textContent = label; updateReviewAvailability(card); }
+    $$(".review-card").forEach(updateReviewAvailability);
+  }
 }
 
 function renderSchedule() {
+  if (!state.ready) {
+    $("#schedule-title").textContent = "Schedule is not available yet";
+    $("#schedule-result-count").textContent = "Waiting for data";
+    $("#schedule-rows").innerHTML = '<tr><td colspan="5">Retry loading to see the imported schedule.</td></tr>';
+    return;
+  }
   const schedule = state.summary?.schedule;
   $("#schedule-title").textContent = schedule?.filename || "No schedule loaded";
   $("#schedule-meta").textContent = schedule ? `${schedule.format.toUpperCase()} · ${schedule.activity_count} activities · imported ${displayDate(schedule.created_at)}` : "Import an XER or CSV schedule to begin.";
@@ -310,6 +436,8 @@ async function renderHistory() {
   if (historyController) historyController.abort();
   historyController = new AbortController();
   const params = historyParams();
+  $("#history-retry").hidden = true;
+  $("#history-previous").disabled = true; $("#history-next").disabled = true;
   $("#history-activities").innerHTML = state.activities.map(a => `<option value="${safe(a.external_id)}">${safe(a.name)}</option>`).join("");
   $("#history-disciplines").innerHTML = [...new Set(state.events.map(e=>e.discipline).filter(Boolean))].map(d=>`<option value="${safe(d)}">`).join("");
   if (params.date_from && params.date_to && params.date_from > params.date_to) { $("#history-result-count").textContent = "Choose an end date on or after the start date."; return; }
@@ -320,7 +448,7 @@ async function renderHistory() {
     result = await request(`/api/history?${new URLSearchParams({...params,limit:50,offset:historyOffset})}`, {signal:historyController.signal});
   } catch (error) {
     if (sequence !== historySequence || error.name === "AbortError") return;
-    if (!error.transport) { $("#history-result-count").textContent = error.message; return; }
+    if (!error.transport) { $("#history-result-count").textContent = `${error.message} Previous results are retained.`; $("#history-retry").hidden = false; return; }
     const events = cachedHistory(params); cached = true;
     result = {events:events.slice(historyOffset,historyOffset+50),total:events.length,has_more:historyOffset+50<events.length};
   }
@@ -345,7 +473,7 @@ async function loadQuality() {
 function renderExports() {
   const approved = state.events.filter(e => e.status === "approved").length;
   $("#export-count").textContent = `${approved} approved event${approved === 1 ? "" : "s"} ready`;
-  $("#create-export").disabled = approved === 0 || !offline.reachable || !["owner","planner"].includes(window.CarrickAuth.project?.role);
+  $("#create-export").disabled = state.exporting || state.refreshing || state.stale || !state.ready || approved === 0 || !offline.reachable || !["owner","planner"].includes(window.CarrickAuth.project?.role);
 }
 
 async function importFile(file) {
@@ -368,6 +496,7 @@ async function uploadSpreadsheet(file) {
   if (!file) return;
   if (state.processing) return;
   state.processing = true;
+  updateAvailability();
   const button = $("#upload-spreadsheet");
   button.disabled = true;
   const label = button.innerHTML;
@@ -391,7 +520,7 @@ async function uploadSpreadsheet(file) {
     await refresh();
     go(result.duplicate ? "history" : "review");
   } catch (error) { toast(error.message, true); }
-  finally { state.processing = false; button.disabled = false; button.innerHTML = label; $("#spreadsheet-file").value = ""; }
+  finally { state.processing = false; button.disabled = false; button.innerHTML = label; $("#spreadsheet-file").value = ""; updateAvailability(); }
 }
 
 async function uploadDocument(file) {
@@ -404,6 +533,7 @@ async function submitReport(event) {
   const content = $("#report-text").value.trim();
   if (!content) return toast("Write a field update first.", true);
   state.processing = true;
+  updateAvailability();
   const button = $("#report-form button[type=submit]");
   button.disabled = true;
   const label = button.innerHTML;
@@ -446,7 +576,7 @@ async function submitReport(event) {
     toast(result.duplicate ? "Repeat source retained. Existing decisions are shown in history." : `Processed ${result.events.length} event${result.events.length === 1 ? "" : "s"}.`);
     await refresh();
   } catch (error) { toast(error.message, true); }
-  finally { state.processing = false; button.disabled = false; button.innerHTML = label; renderDeviceReports(); }
+  finally { state.processing = false; button.innerHTML = label; updateAvailability(); renderDeviceReports(); }
 }
 
 async function loadDemo() {
@@ -464,6 +594,7 @@ async function loadDemo() {
 async function createExport() {
   const button = $("#create-export");
   if (button.disabled) return;
+  state.exporting = true;
   const label = button.innerHTML;
   button.disabled = true;
   button.textContent = "Preparing export…";
@@ -473,7 +604,7 @@ async function createExport() {
     toast(result.id ? "Export created." : "Repeated actuals grouped; no export needed.");
     await refresh();
   } catch (error) { toast(error.message, true); }
-  finally { button.innerHTML = label; renderExports(); }
+  finally { state.exporting = false; button.innerHTML = label; renderExports(); }
 }
 
 let draftTimer;
@@ -548,6 +679,11 @@ async function renderDeviceReports() {
 }
 
 function bind() {
+  $("#ai-mode").addEventListener("change",()=>state.aiPreferred=$("#ai-mode").checked);
+  $("#toast-close").addEventListener("click",()=>{clearTimeout(toastTimer);$("#toast").className="";});
+  $("#workspace-refresh").addEventListener("click",refresh);
+  $("#workspace-retry").addEventListener("click",refresh);
+  $("#history-retry").addEventListener("click",renderHistory);
   $$(".nav-item").forEach(el => el.addEventListener("click", () => go(el.dataset.view)));
   $$("[data-goto]").forEach(el => el.addEventListener("click", () => go(el.dataset.goto)));
   $$(".example").forEach(el => el.addEventListener("click", () => {
@@ -579,7 +715,7 @@ function bind() {
   });
   $("#quality-load").addEventListener("click", loadQuality);
   $("#create-export").addEventListener("click", createExport);
-  $("#sync-now").addEventListener("click", async () => { await offline.health(); await offline.sync(true); });
+  $("#sync-now").addEventListener("click", async () => { try { await offline.health(); await offline.sync(true); } catch(error) { toast(error.message,true); } });
   $("#retry-outbox").addEventListener("click", () => offline.sync(true).catch(error => toast(error.message, true)));
   $$("#report-text, #report-date, #report-discipline, #report-location").forEach(input => input.addEventListener("input", () => { clearTimeout(draftTimer); draftTimer = setTimeout(persistTypedDraft, 400); }));
   let lastReachable = offline.reachable;
@@ -587,8 +723,7 @@ function bind() {
     renderDeviceReports();
     if (offline.reachable !== lastReachable) {
       lastReachable = offline.reachable;
-      $$(".approve-button, .reject-button, .clarify-button").forEach(button => button.disabled = !offline.reachable);
-      renderExports();
+      updateAvailability();
     }
   });
   window.addEventListener("carrick-drafts-changed", renderDeviceReports);
@@ -613,6 +748,7 @@ window.CarrickAnalytics.init({ post, request, toast, offline, date: displayDate 
 async function startWorkspace() {
 await window.CarrickAuth.start();
 bind();
+renderOverview(); updateAvailability();
 setNavigation(false);
 go(labels[location.hash.slice(1)] ? location.hash.slice(1) : "overview", false);
 refreshAiStatus().catch(() => $("#ai-status").textContent = "AI availability could not be checked. Standard matching is available.");

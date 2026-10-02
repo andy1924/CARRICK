@@ -37,3 +37,14 @@ The website describes XER/CSV import, uploaded reports, optional cloud or local 
 The product tour starts in review so the source-to-activity connection is visible immediately. Example report selection resets the sample decision. Custom notes use the existing read-only preview endpoint; cancellation prevents an older response from replacing a newly selected example.
 
 Workspace navigation preserves the selected view in the URL. On mobile, the navigation drawer closes after selection and on Escape, with hidden navigation excluded from keyboard interaction. Pending processing states prevent repeat submissions. Candidate radio choices and the full activity selector stay synchronized. Every approval still uses the existing server validation.
+
+
+## Workspace recovery and interaction reliability
+
+The workspace now keeps its last usable data during refreshes and shows a persistent loading/error panel with an explicit retry. Missing data displays placeholders rather than zero counts or an empty project. Overlapping refreshes are cancelled so older responses cannot replace newer ones. Approvals and exports pause while schedule data is stale.
+
+Review selections, dates, clarification text, and planner notes survive background updates. Actual approval remains disabled until activity/date checks succeed and required warning notes are present. Failed checks offer an inline retry; decisions and exports remain locked while saving. Report fields are temporarily locked during submission to prevent new edits being cleared by the response.
+
+Errors stay visible until dismissed. History and scenario requests provide retry controls while retaining previous results with a stale-result explanation. Sign-in can retry a failed connection and ignores malformed remembered context. Restricted browser storage does not block online sign-in. Reconnection preserves the current choice of standard/AI matching. Header controls wrap on narrow screens.
+
+Browser regression coverage includes failed initial loads, preserved review edits, validation failure/retry, connection recovery at sign-in, and submission locks. Existing import, capture, approval, export, and offline workflows remain covered.

@@ -1,5 +1,5 @@
 window.CarrickAnalytics = (() => {
-  let app;
+  let app, loadSequence=0, lastPayload;
   const $ = selector => document.querySelector(selector);
   const safe = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   function render(data) {
@@ -23,17 +23,33 @@ window.CarrickAnalytics = (() => {
     });
   }
   async function load(payload) {
+    const sequence=++loadSequence;
+    lastPayload=payload;
+    const status=$("#analytics-state"),button=$("#scenario-form button");
+    status.hidden=false;status.textContent="Calculating the scenario…";button.disabled=true;
+    $("#analytics-result").setAttribute("aria-busy","true");
     try {
       if (!app.offline.reachable) {
         const stored = await app.offline.get("snapshots", "analytics");
+        if(sequence!==loadSequence)return;
         render(stored?.value);
-        app.toast(stored ? "Showing the last saved scenario. Reconnect to recalculate." : "Reconnect to calculate a scenario.");
+        status.textContent=stored ? "Showing the last saved scenario. Reconnect to recalculate with current dates and settings." : "Reconnect to calculate a scenario.";
         return;
       }
       const result = payload ? await app.post("/api/analytics/scenario", payload) : await app.request("/api/analytics");
-      await app.offline.put("snapshots", { id: "analytics", value: result, savedAt: new Date().toISOString() });
+      if(sequence!==loadSequence)return;
+      await app.offline.put("snapshots", { id: "analytics", value: result, savedAt: new Date().toISOString() }).catch(error=>app.toast(error.message,true));
+      if(sequence!==loadSequence)return;
       render(result);
-    } catch (error) { app.toast(error.message, true); }
+      status.hidden=true;
+    } catch (error) {
+      if(sequence!==loadSequence)return;
+      status.textContent=`${error.message} Any previous result is retained and has not been recalculated.`;
+      const retry=document.createElement("button");retry.type="button";retry.className="text-button";retry.textContent="Retry scenario";
+      retry.addEventListener("click",()=>load(lastPayload));status.append(retry);
+    } finally {
+      if(sequence===loadSequence){button.disabled=false;$("#analytics-result").setAttribute("aria-busy","false");}
+    }
   }
   return { load, init(callbacks) {
     app = callbacks;

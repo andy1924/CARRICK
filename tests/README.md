@@ -36,10 +36,14 @@ Covered workflows:
 8. Explicit rebind after a newer schedule import.
 9. Server scan recovery after device drafts are cleared.
 10. Legacy device draft migration without deleting originals or restoring discarded drafts twice.
-11. Supervisor restrictions and inaccessible projects.
+11. Failed workspace load, persistent retry, and placeholders instead of false empty metrics.
+12. Planner edits retained through refresh and failed validation blocking approval.
+13. Sign-in recovery from malformed remembered state and server outage.
+14. Submission locking and matching preference retained on reconnection.
+15. Supervisor restrictions and inaccessible projects.
 
 AI/OCR/speech adapters are mocked and microphone input comes from Chrome's fake device. Engines need their own representative-data evaluation. The browser suite does not make calls to OpenAI/Ollama or install/download local inference models.
 
 ## Latest run
 
-2026-10-02: 25 regression tests passed using the project virtual environment; 11 Chrome browser workflows passed. No Oracle P6 installation was available for independent import acceptance. See [evaluation plan](../docs/quality/evaluation.md) for production accuracy, coverage, latency, cost, and calibration gates.
+2026-10-02: 25 regression tests passed using the project virtual environment; 15 Chrome browser workflows passed. No Oracle P6 installation was available for independent import acceptance. See [evaluation plan](../docs/quality/evaluation.md) for production accuracy, coverage, latency, cost, and calibration gates.

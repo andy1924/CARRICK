@@ -11,10 +11,10 @@ test.beforeEach(async({page})=>{
   await expect(page.locator('#auth-form')).toHaveAttribute('data-setup',/true|false/);
   if(await page.locator('#auth-form').getAttribute('data-setup')==='true')await page.locator('#auth-name').fill('Fixture Owner');
   await page.locator('#auth-email').fill('owner@example.test');await page.locator('#auth-password').fill(password);await page.locator('#auth-submit').click();
-  await expect(page.locator('#auth-panel')).toBeHidden();await expect(page.locator('#metrics .metric')).toHaveCount(4);
+  await expect(page.locator('#auth-panel')).toBeHidden();await expect(page.locator('#metrics .metric')).toHaveCount(4);await expect(page.locator('#workspace-status')).toBeHidden();
 });
 test.afterEach(()=>expect(errors,'No dashboard runtime errors').toEqual([]));
-async function importSchedule(page){await page.locator('[data-view="schedule"]').click();await page.locator('#schedule-file').setInputFiles(schedule);await expect(page.locator('#schedule-result-count')).toHaveText('12 activities');await page.locator('[data-view="capture"]').click();await page.locator('#report-date').fill('2026-10-01');await page.locator('#ai-mode').uncheck();}
+async function importSchedule(page){await page.locator('[data-view="schedule"]').click();await page.locator('#schedule-file').setInputFiles(schedule);await expect(page.locator('#import-schedule')).toBeEnabled();await expect(page.locator('#schedule-result-count')).toHaveText('12 activities');await page.locator('[data-view="capture"]').click();await page.locator('#report-date').fill('2026-10-01');await page.locator('#ai-mode').uncheck();}
 async function approve(page,id){await page.locator('[data-view="review"]').click();const card=page.locator('.review-card').filter({has:page.locator(`.candidate-choice[value="${id}"]`)}).first();await card.locator('.candidate-select').selectOption(id);await card.locator('.decision-reason').fill('Fixture planner checked source and dependencies');await expect(card.locator('.approve-button')).toBeEnabled();await card.locator('.approve-button').click();await expect(card).toHaveCount(0);}
 async function submitText(page,text){await page.locator('[data-view="capture"]').click();await page.locator('#report-text').fill(text);await page.locator('#report-form button[type=submit]').click();await expect(page.locator('#report-text')).toHaveValue('');}
 
@@ -61,6 +61,32 @@ test('initial owner inherits legacy device drafts without deleting the original'
   await page.reload();await expect(page.locator('#auth-panel')).toBeHidden();await page.locator('[data-view="capture"]').click();await expect(page.locator('#device-reports-list')).toContainText('legacy-recording.webm');
   const contents=await page.evaluate(async()=>{const draft=await window.CarrickOffline.get('drafts','legacy-recording');return draft.blob.text();});expect(contents).toBe('retained audio');
   await page.evaluate(()=>window.CarrickOffline.remove('drafts','legacy-recording'));await page.reload();await expect(page.locator('#auth-panel')).toBeHidden();await page.locator('[data-view="capture"]').click();await expect(page.locator('#device-reports-list')).not.toContainText('legacy-recording.webm');
+});
+test('failed workspace load has a persistent retry and no false empty-state metrics',async({page})=>{
+  await page.evaluate(()=>window.CarrickOffline.remove('snapshots','workspace'));
+  await page.route('**/api/events',route=>route.fulfill({status:503,contentType:'text/html',body:'Temporary upstream failure'}));
+  await page.reload();await expect(page.locator('#auth-panel')).toBeHidden();await expect(page.locator('#workspace-status-title')).toHaveText('Workspace could not load');await expect(page.locator('#metrics .value')).toHaveText(['—','—','—','—']);await expect(page.locator('#welcome')).toBeHidden();
+  await page.unroute('**/api/events');await page.locator('#workspace-retry').click();await expect(page.locator('#workspace-status')).toBeHidden();await expect(page.locator('#workspace-updated')).toContainText('Updated');
+});
+test('planner edits survive refresh and failed checks never enable approval',async({page})=>{
+  await importSchedule(page);await submitText(page,'North pipeline welding started today');await page.locator('[data-view="review"]').click();
+  const card=page.locator('.review-card').filter({has:page.locator('.candidate-choice[value="PI-301"]')}).first();
+  await card.locator('.candidate-select').selectOption('PI-301');await card.locator('.decision-reason').fill('Keep this planner note');await expect(card.locator('.approve-button')).toBeEnabled();
+  await page.locator('#workspace-refresh').click();await expect(page.locator('#workspace-status')).toBeHidden();await expect(card.locator('.decision-reason')).toHaveValue('Keep this planner note');await expect(card.locator('.candidate-select')).toHaveValue('PI-301');
+  await page.route('**/api/events/*/checks',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'Checks temporarily unavailable'})}));await card.locator('.candidate-select').selectOption('PI-302');await expect(card.locator('.proposal-checks')).toContainText('Checks temporarily unavailable');await expect(card.locator('.approve-button')).toBeDisabled();
+  await page.evaluate(()=>{window.CarrickOffline.setReachable(false);window.CarrickOffline.setReachable(true);});await expect(card.locator('.approve-button')).toBeDisabled();
+  await page.unroute('**/api/events/*/checks');await card.getByRole('button',{name:'Retry checks'}).click();await expect(card.locator('.approve-button')).toBeEnabled();await expect(card.locator('.decision-reason')).toHaveValue('Keep this planner note');
+});
+test('sign-in recovers from invalid remembered context and unavailable server',async({page,browser})=>{
+  await page.evaluate(()=>sessionStorage.setItem('carrick-session-context','invalid-json'));await page.reload();await expect(page.locator('#auth-panel')).toBeHidden();await expect(page.locator('#workspace-status')).toBeHidden();
+  const context=await browser.newContext();const login=await context.newPage();const failures=[];login.on('pageerror',error=>failures.push(error.message));await login.route('**/api/auth/**',route=>route.abort());await login.goto('/app');await expect(login.locator('#auth-retry')).toBeVisible();await expect(login.locator('#auth-submit')).toBeDisabled();await login.unroute('**/api/auth/**');await login.locator('#auth-retry').click();await expect(login.locator('#auth-submit')).toBeEnabled();await expect(login.locator('#auth-form')).toHaveAttribute('data-setup','false');expect(failures).toEqual([]);await context.close();
+});
+test('submission locks report edits and reconnect preserves standard matching',async({page})=>{
+  await importSchedule(page);await page.evaluate(()=>window.dispatchEvent(new Event('carrick-reconnected')));await expect(page.locator('#workspace-status')).toBeHidden();await expect(page.locator('#ai-mode')).not.toBeChecked();
+  let release,attempts=0;await page.route('**/api/reports',async route=>{attempts++;await new Promise(resolve=>release=resolve);await route.continue();});
+  await page.locator('#report-text').fill('North pipeline welding started today');await page.locator('#report-form button[type=submit]').click();
+  try{await expect(page.locator('#report-form')).toHaveAttribute('aria-busy','true');await expect(page.locator('#report-text')).toBeDisabled();await expect(page.locator('#report-form button[type=submit]')).toBeDisabled();await expect.poll(()=>attempts).toBe(1);}finally{release?.();}
+  await expect(page.locator('#report-text')).toBeEnabled();await expect(page.locator('#report-text')).toHaveValue('');expect(attempts).toBe(1);
 });
 test('supervisor cannot approve or export and another project stays inaccessible',async({page,browser})=>{
   await importSchedule(page);
