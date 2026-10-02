@@ -1,5 +1,7 @@
 # Evaluation plan
 
+The [first synthetic comparison](benchmark-2026-10-02.md) records a small end-to-end result for the optional AI path. It is not a production performance estimate.
+
 ## Dataset
 
 Build a synthetic but structurally realistic schedule across several disciplines, locations, and repeated activity names. Create report examples with ground-truth activity IDs and event types. Include clean phrasing, abbreviations, spelling errors, multiple events, negation, future tense, missing dates, duplicate reports, conflicting actuals, and out-of-sequence work.

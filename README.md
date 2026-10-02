@@ -2,17 +2,39 @@
 
 Carrick turns field progress reports into traceable proposals for updating an infrastructure project schedule. Supervisors can describe work in familiar language; planners retain control over uncertain matches and exported schedule changes.
 
-This repository contains a runnable local prototype and the design documentation. The first working slice supports XER or CSV schedule import, text and CSV field reports, event extraction, candidate ranking, planner decisions, and an approved progress CSV export. Matching currently uses transparent rules and lexical similarity; advanced models and native schedule-file output remain planned work.
+This repository contains a runnable local prototype and the design documentation. It supports XER or CSV schedule import, typed notes, CSV logs, text/email/PDF reports, planner decisions, and an approved progress CSV export. An optional AI path retrieves activities from the imported schedule, extracts structured events, and reranks existing TASK IDs. Native schedule-file output remains planned work.
 
 ## Run locally
 
-Requires Python 3.11 or newer. No package installation is needed.
+Requires Python 3.11 or newer. Basic text and CSV workflows need no package installation.
 
 ```bash
 python3 -m services.api.app
 ```
 
 Open `http://127.0.0.1:8765` for the interactive introduction, or go to `http://127.0.0.1:8765/app` for the workspace. The introduction previews matching against a synthetic schedule without saving notes. In the workspace, select **Load sample project**, capture a field update, review it, and create an export. The local SQLite database is stored under `data/private/` and ignored by Git. The server binds to localhost by default and has no production authentication; do not expose it publicly.
+
+## Enable AI analysis
+
+The ignored `.env` file is ready for your `OPENAI_API_KEY`. Set `CARRICK_AI_MODE=openai` and restart the server. The report composer then offers AI-assisted matching. This mode sends the note and retrieved schedule activity snippets to OpenAI; the key stays on the local server. The model proposes events and TASK IDs, while a planner confirms every actual date and activity before export. The rule-based mode remains available.
+
+AI uses OpenAI embeddings for retrieval and a structured model response for extraction and reranking. To use a dedicated local cross-encoder for reranking instead, install the optional package and set `CARRICK_RERANKER=cross_encoder` in `.env`:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-ai.txt
+.venv/bin/python -m services.api.app
+```
+
+For selectable-text PDF imports, install `requirements-documents.txt` in the same environment. Scanned pages need a separate OCR step. `.eml` and `.txt` imports need no extra package. See [AI architecture](docs/architecture/ai-rag.md) for safeguards and model setup.
+
+Compare rule-based and AI results on the synthetic evaluation set after adding a key:
+
+```bash
+.venv/bin/python -m scripts.evaluate_matching --ai
+```
+
+The small synthetic set is a development check, not a claim of production accuracy.
 
 Run the checks with:
 
@@ -35,7 +57,7 @@ python3 -m unittest discover -s tests -v
 | --- | --- |
 | `apps/web/` | Supervisor capture and planner review interface |
 | `services/api/` | HTTP API, orchestration, authorization, and transactional writes |
-| `services/worker/` | Import, extraction, matching, and export jobs |
+| `services/worker/` | Import, extraction, matching, AI retrieval, and document text ingestion |
 | `packages/contracts/` | Shared request, event, and export contracts |
 | `data/samples/` | Public, synthetic fixtures only |
 | `infra/` | Local and deployment configuration |

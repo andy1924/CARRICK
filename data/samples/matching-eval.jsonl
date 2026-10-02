@@ -1,0 +1,8 @@
+{"report":"Finished pouring the main foundation today","date":"2026-10-01","expected_task_id":"CV-102","expected_kind":"actual_finish"}
+{"report":"Started welding on the north line today","date":"2026-10-01","expected_task_id":"PI-301","expected_kind":"actual_start"}
+{"report":"The south line welding crew mobilized today","date":"2026-10-01","expected_task_id":"PI-302","expected_kind":"actual_start"}
+{"report":"Pump A installation kicked off today","date":"2026-10-01","expected_task_id":"ME-201","expected_kind":"actual_start"}
+{"report":"Low voltage cable pulling has begun","date":"2026-10-01","expected_task_id":"EL-401","expected_kind":"actual_start"}
+{"report":"The boiler steel frame is up","date":"2026-10-01","expected_task_id":"ME-203","expected_kind":"actual_finish"}
+{"report":"Pressure checked the northern water line","date":"2026-10-01","expected_task_id":"PI-303","expected_kind":"actual_finish"}
+{"report":"The control cabinet is being brought online","date":"2026-10-01","expected_task_id":"EL-402","expected_kind":"in_progress"}

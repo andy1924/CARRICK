@@ -80,12 +80,15 @@ def parse_xer(content: str) -> tuple[list[dict], list[dict], str]:
             "actual_finish": row.get("act_end_date", ""),
             "status": row.get("status_code", ""),
         })
+    # TASKPRED references internal task_id values. Resolve them to the same
+    # external TASK IDs shown to planners before storing relationship context.
+    task_codes = {a["source_key"]: a["external_id"] for a in activities}
     relationships = [{
-        "predecessor": r.get("pred_task_id", ""),
-        "successor": r.get("task_id", ""),
+        "predecessor": task_codes.get(r.get("pred_task_id", ""), ""),
+        "successor": task_codes.get(r.get("task_id", ""), ""),
         "kind": r.get("pred_type", "FS"),
         "lag": r.get("lag_hr_cnt", "0"),
-    } for r in tables.get("TASKPRED", [])]
+    } for r in tables.get("TASKPRED", []) if r.get("pred_task_id") in task_codes and r.get("task_id") in task_codes]
     _check_unique(activities)
     return activities, relationships, "xer"
 

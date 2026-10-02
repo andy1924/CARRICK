@@ -1,0 +1,3 @@
+# Optional local cross-encoder reranking. OpenAI retrieval and model reranking
+# work without this package after adding an API key to .env.
+sentence-transformers>=5.0,<7

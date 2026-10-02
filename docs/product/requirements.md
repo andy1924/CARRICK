@@ -12,7 +12,7 @@ Reduce the time and effort needed to link field progress to the correct L5/L6 sc
 
 ## Release scope
 
-The local prototype currently covers basic schedule import, text and CSV reports, rule-based event extraction, lexical activity suggestions, planner decisions, and progress CSV export. The acceptance criteria below describe the fuller release and are not all complete.
+The local prototype currently covers schedule import, text/CSV/email/selectable-text PDF reports, rule and optional AI event extraction, lexical and semantic activity suggestions, a clarification turn, planner decisions, and progress CSV export. The acceptance criteria below describe the fuller release and are not all complete.
 
 | ID | Capability | Acceptance criterion |
 | --- | --- | --- |

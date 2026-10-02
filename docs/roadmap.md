@@ -2,7 +2,7 @@
 
 ## Current build
 
-The local application already loads a synthetic XER schedule or a schedule CSV, accepts text and discipline CSV reports, extracts events with deterministic rules, ranks candidate activities lexically, records planner decisions, and exports approved events as a progress CSV. Five automated checks cover the central parsing and review-to-export behavior. It is a local prototype without user accounts, asynchronous jobs, semantic reranking, or native schedule-file output.
+The local application loads a synthetic XER schedule or schedule CSV, accepts typed notes, discipline CSV, email, and selectable-text PDF reports, and exports approved events as a progress CSV. It now offers optional OpenAI-based event extraction, schedule-grounded semantic retrieval, a local cross-encoder reranker, and one clarification turn. Rules remain available as a baseline. It is a local prototype without user accounts, asynchronous jobs, OCR for scans, or native schedule-file output.
 
 ## Milestone 1: Schedule foundation
 

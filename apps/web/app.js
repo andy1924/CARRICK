@@ -1,4 +1,4 @@
-const state = { summary: null, activities: [], events: [], view: "overview" };
+const state = { summary: null, activities: [], events: [], view: "overview", ai: null };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const safe = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
@@ -43,6 +43,16 @@ async function refresh() {
   state.activities = activities;
   state.events = events;
   renderOverview(); renderReview(); renderSchedule(); renderHistory(); renderExports();
+}
+
+async function refreshAiStatus() {
+  const status = await request("/api/ai/status");
+  state.ai = status;
+  $("#ai-mode").disabled = !status.available;
+  $("#ai-mode").checked = status.available;
+  $("#ai-status").textContent = status.available
+    ? `${status.model} · ${status.reranker === "cross_encoder" ? "local cross-encoder" : "model reranking"} · planner review required`
+    : status.message;
 }
 
 function statusTag(status) {
@@ -99,6 +109,7 @@ function renderReview() {
   $("#review-list").innerHTML = pending.length ? pending.map(reviewCard).join("") : `<div class="panel">${empty("No decisions waiting", "New or uncertain field events will appear here.")}</div>`;
   $$(".approve-button").forEach(button => button.addEventListener("click", () => decide(button.dataset.id, button.dataset.action)));
   $$(".reject-button").forEach(button => button.addEventListener("click", () => decide(button.dataset.id, "reject")));
+  $$(".clarify-button").forEach(button => button.addEventListener("click", () => clarify(button.dataset.id)));
 }
 
 function reviewCard(event) {
@@ -110,8 +121,24 @@ function reviewCard(event) {
   const warningList = (event.warnings || []).includes("Several activities are plausible")
     ? event.warnings.filter(w => w !== "No reliable activity match") : (event.warnings || []);
   const warnings = warningList.length ? `<div class="warning">${warningList.map(w => safe(w === "Event does not set an actual date" ? "This note will not update actual dates" : w)).join(" · ")}</div>` : "";
-  const evidence = event.candidates?.[0]?.evidence?.length ? `<p class="match-evidence">Matched words: ${safe(event.candidates[0].evidence.join(", "))}</p>` : "";
-  return `<article class="panel review-card" data-event-id="${safe(event.id)}"><div class="review-head"><div><p class="eyebrow">${safe(event.kind.replaceAll("_", " ").toUpperCase())}</p><h2>Field statement</h2></div>${statusTag(event.status)}</div><blockquote>${safe(event.text)}</blockquote>${evidence}${warnings}<div class="review-details"><div class="detail"><small>Event date</small><strong>${displayDate(event.event_date)}</strong></div><div class="detail"><small>Discipline</small><strong>${safe(event.discipline || "Unspecified")}</strong></div><div class="detail"><small>Location</small><strong>${safe(event.location || "Unspecified")}</strong></div></div><div class="review-actions"><label>${isActual ? "Schedule activity" : "Related activity (optional)"}${select}</label><label>${isActual ? "Actual date" : "Reference date"}<input class="decision-date" type="date" value="${safe(event.event_date || "")}"></label><button class="button secondary reject-button" data-id="${safe(event.id)}">Reject</button><button class="button primary approve-button" data-action="${isActual ? "approve" : "record"}" data-id="${safe(event.id)}">${isActual ? "Approve" : "Save note"}</button></div><input class="decision-reason" placeholder="Add a decision note (optional)" aria-label="Decision note"></article>`;
+  const top = event.candidates?.[0];
+  const evidence = top?.match_reason ? `<p class="match-evidence">Model rationale: ${safe(top.match_reason)}</p>`
+    : top?.evidence?.length ? `<p class="match-evidence">Matched words: ${safe(top.evidence.join(", "))}</p>` : "";
+  const aiLine = event.analysis_mode === "ai" ? `<p class="match-evidence">AI-assisted · ${safe(event.model_name || "model")}. Verify every proposed value.</p>` : "";
+  const question = event.clarification_question ? `<div class="warning">Clarify: ${safe(event.clarification_question)}</div>` : "";
+  const clarification = event.analysis_mode === "ai" ? `<div class="clarification"><label>${event.clarification_answer ? "Refine your answer" : "Add context from site"}<input class="clarification-answer" maxlength="400" placeholder="For example: north pipeline near Pump A" value="${safe(event.clarification_answer || "")}"></label><button class="button secondary clarify-button" data-id="${safe(event.id)}">Refine suggestion ↗</button></div>` : "";
+  return `<article class="panel review-card" data-event-id="${safe(event.id)}"><div class="review-head"><div><p class="eyebrow">${safe(event.kind.replaceAll("_", " ").toUpperCase())}</p><h2>Field statement</h2></div>${statusTag(event.status)}</div><blockquote>${safe(event.text)}</blockquote>${aiLine}${evidence}${question}${warnings}${clarification}<div class="review-details"><div class="detail"><small>Event date</small><strong>${displayDate(event.event_date)}</strong></div><div class="detail"><small>Discipline</small><strong>${safe(event.discipline || "Unspecified")}</strong></div><div class="detail"><small>Location</small><strong>${safe(event.location || "Unspecified")}</strong></div></div><div class="review-actions"><label>${isActual ? "Schedule activity" : "Related activity (optional)"}${select}</label><label>${isActual ? "Actual date" : "Reference date"}<input class="decision-date" type="date" value="${safe(event.event_date || "")}"></label><button class="button secondary reject-button" data-id="${safe(event.id)}">Reject</button><button class="button primary approve-button" data-action="${isActual ? "approve" : "record"}" data-id="${safe(event.id)}">${isActual ? "Approve" : "Save note"}</button></div><input class="decision-reason" placeholder="Add a decision note (optional)" aria-label="Decision note"></article>`;
+}
+
+async function clarify(id) {
+  const card = $(`.review-card[data-event-id="${id}"]`);
+  const answer = $(".clarification-answer", card).value.trim();
+  if (!answer) return toast("Add context from the field first.", true);
+  try {
+    await post(`/api/events/${id}/clarify`, { answer });
+    toast("Suggestion refined. Check the activity and date before deciding.");
+    await refresh();
+  } catch (error) { toast(error.message, true); }
 }
 
 async function decide(id, action) {
@@ -161,31 +188,71 @@ async function importFile(file) {
 
 async function uploadSpreadsheet(file) {
   if (!file) return;
+  if (state.processing) return;
+  state.processing = true;
+  const button = $("#upload-spreadsheet");
+  button.disabled = true;
+  const label = button.textContent;
+  button.textContent = "Analyzing file…";
   try {
-    const result = await post("/api/reports", { source_kind: "spreadsheet", filename: file.name, content: await file.text() });
+    const result = await post("/api/reports", { source_kind: "spreadsheet", filename: file.name,
+      content: await file.text(), analysis_mode: $("#ai-mode").checked ? "ai" : "rules" });
     toast(`Processed ${result.events.length} field events.`);
     await refresh();
     go("review");
   } catch (error) { toast(error.message, true); }
+  finally { state.processing = false; button.disabled = false; button.textContent = label; $("#spreadsheet-file").value = ""; }
+}
+
+async function uploadDocument(file) {
+  if (!file) return;
+  if (state.processing) return;
+  state.processing = true;
+  const button = $("#upload-document");
+  button.disabled = true;
+  const label = button.textContent;
+  button.textContent = "Analyzing file…";
+  try {
+    if (file.size > 2_000_000) throw new Error("Choose a report file smaller than 2 MB.");
+    const content = file.name.toLowerCase().endsWith(".pdf")
+      ? await new Promise((resolve, reject) => { const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = reject;
+          reader.readAsDataURL(file); })
+      : await file.text();
+    const result = await post("/api/reports", { source_kind: "document", filename: file.name, content,
+      event_date: $("#report-date").value, discipline: $("#report-discipline").value,
+      location: $("#report-location").value, analysis_mode: $("#ai-mode").checked ? "ai" : "rules" });
+    toast(`Processed ${result.events.length} events from ${file.name}.`);
+    await refresh(); go("review");
+  } catch (error) { toast(error.message, true); }
+  finally { state.processing = false; button.disabled = false; button.textContent = label; $("#document-file").value = ""; }
 }
 
 async function submitReport(event) {
   event.preventDefault();
+  if (state.processing) return;
   const content = $("#report-text").value.trim();
   if (!content) return toast("Write a field update first.", true);
+  state.processing = true;
+  const button = $("#report-form button[type=submit]");
+  button.disabled = true;
+  const label = button.innerHTML;
+  button.textContent = "Analyzing report…";
   try {
     const result = await post("/api/reports", {
       source_kind: "text", content,
+      analysis_mode: $("#ai-mode").checked ? "ai" : "rules",
       event_date: $("#report-date").value,
       discipline: $("#report-discipline").value,
       location: $("#report-location").value
     });
-    $("#capture-result").innerHTML = `<div class="panel"><p class="eyebrow">PROCESSING COMPLETE</p><h2>${result.events.length} event${result.events.length === 1 ? "" : "s"} extracted</h2>${result.events.map(e => `<div class="event-row"><div class="event-glyph">◇</div><div class="event-body"><strong>${safe(e.text)}</strong><div class="event-meta"><small>${safe(e.candidates[0]?.activity_id || "Unmatched")} · ${displayDate(e.event_date)}</small>${statusTag(e.status)}</div></div></div>`).join("")}<div class="divider"></div><button class="button secondary" id="result-review">Open planner review →</button></div>`;
+    $("#capture-result").innerHTML = `<div class="panel"><p class="eyebrow">${result.analysis_mode === "ai" ? "AI PROPOSALS READY" : "PROCESSING COMPLETE"}</p><h2>${result.events.length} event${result.events.length === 1 ? "" : "s"} extracted</h2>${result.events.map(e => `<div class="event-row"><div class="event-glyph">◇</div><div class="event-body"><strong>${safe(e.text)}</strong><div class="event-meta"><small>${safe(e.candidates[0]?.activity_id || "Unmatched")} · ${displayDate(e.event_date)}</small>${statusTag(e.status)}</div></div></div>`).join("")}<div class="divider"></div><button class="button secondary" id="result-review">Open planner review →</button></div>`;
     $("#result-review").addEventListener("click", () => go("review"));
     $("#report-text").value = "";
     toast(`Processed ${result.events.length} event${result.events.length === 1 ? "" : "s"}.`);
     await refresh();
   } catch (error) { toast(error.message, true); }
+  finally { state.processing = false; button.disabled = false; button.innerHTML = label; }
 }
 
 async function loadDemo() {
@@ -220,9 +287,12 @@ function bind() {
   $("#schedule-file").addEventListener("change", e => importFile(e.target.files[0]));
   $("#upload-spreadsheet").addEventListener("click", () => $("#spreadsheet-file").click());
   $("#spreadsheet-file").addEventListener("change", e => uploadSpreadsheet(e.target.files[0]));
+  $("#upload-document").addEventListener("click", () => $("#document-file").click());
+  $("#document-file").addEventListener("change", e => uploadDocument(e.target.files[0]));
   $("#schedule-search").addEventListener("input", renderSchedule);
   $("#create-export").addEventListener("click", createExport);
 }
 
 bind();
+refreshAiStatus().catch(error => $("#ai-status").textContent = error.message);
 refresh().catch(error => toast(error.message, true));
