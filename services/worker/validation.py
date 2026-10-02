@@ -82,7 +82,7 @@ def actual_checks(event, activity_id, activities, relationships, today: date, in
     if start and finish and finish < start:
         add("finish_before_start", "error", "Actual finish precedes actual start")
     if event["kind"] == "actual_finish" and not start:
-        add("missing_actual_start", "warning", "Actual start is not recorded; explain the finish-only approval")
+        add("missing_actual_start", "warning", "Actual start is not recorded")
     if include_graph:
         issues.extend(graph_issues(activities, relationships))
     for edge in relationships:
@@ -104,7 +104,7 @@ def actual_checks(event, activity_id, activities, relationships, today: date, in
             continue
         if not predecessor_date:
             if edge["successor"] == activity_id:
-                add("missing_predecessor_actual", "warning", f"{kind}: {edge['predecessor']} has no {pred_field.replace('_', ' ')}")
+                add("missing_predecessor_actual", "warning", f"Predecessor {edge['predecessor']} has no {pred_field.replace('_', ' ')} ({kind})")
             continue
         if successor_date.toordinal() < predecessor_date.toordinal() + lag:
             add("sequence_conflict", "warning", f"{kind}: {edge['successor']} {succ_field.replace('_', ' ')} violates {edge['predecessor']} plus {edge.get('lag') or 0}h lag")

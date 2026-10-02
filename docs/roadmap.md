@@ -2,7 +2,7 @@
 
 ## Current build
 
-The local application imports XER/CSV schedules, captures notes and logs, and exports approved progress. It includes optional cloud or local RAG, scan OCR, local vision transcription for handwritten diaries, browser microphone recording, local speech transcription, a cached workspace and device report outbox, and read-only schedule scenarios. OCR, speech, and local AI need separately provisioned engines/model files. The latest additions have not been tested in this session. See [capture, offline use, and analytics](architecture/capture-offline-analytics.md). It remains a local prototype without user accounts, asynchronous processing jobs, or native schedule-file output.
+The local application imports XER/CSV schedules, captures notes and logs, and exports approved progress. It includes optional cloud or local RAG, scan OCR, local vision transcription for handwritten diaries, browser microphone recording, local speech transcription, a cached workspace and device report outbox, and read-only schedule scenarios. OCR, speech, and local AI need separately provisioned engines/model files. The application now includes password accounts, per-project supervisor/planner/owner access, retained-source recovery, constrained XER output, and validated change sets. Regression and browser suites cover the implemented workflows with deterministic provider adapters. See [access, output, and recovery](architecture/access-output-recovery.md). Independent Oracle P6 import, real OCR/speech quality, production accuracy evaluation, and asynchronous processing jobs remain outstanding.
 
 ## Milestone 1: Schedule foundation
 
@@ -37,7 +37,7 @@ Implemented additions include exact duplicate source groups, review-only similar
 
 - Add staged proposals, review decisions, immutable audit records, and export manifests.
 - Export a structured progress dataset.
-- Attempt limited XER updates and verify round-trip plus independent import on synthetic fixtures.
+- Constrained actual-date/status XER updates and parser round-trip checks are implemented. Independent Oracle P6 import is still an external acceptance gate.
 
 **Exit:** a planner can trace every exported field to a source report and approval; output validation is visible.
 

@@ -10,6 +10,9 @@
   <link rel="manifest" href="/manifest.webmanifest">
 </head>
 <body>
+  <section id="auth-panel" class="auth-panel"><a class="brand" href="/"><img src="/brand/carrick-mark.svg" width="32" height="32" alt=""><strong>Carrick</strong></a><h1 id="auth-title">Sign in to Carrick</h1><p>Access your project reports and planning workspace.</p><form id="auth-form"><label id="auth-name-field" hidden>Your name<input id="auth-name" autocomplete="name"></label><label>Email<input id="auth-email" type="email" autocomplete="username" required></label><label>Password<input id="auth-password" type="password" autocomplete="current-password" minlength="12" maxlength="256" required></label><p id="auth-message" role="alert"></p><button id="auth-submit" class="button primary" type="submit">Sign in</button></form></section>
+  <dialog id="access-dialog" class="access-dialog"><div class="panel-heading"><h2>Projects and access</h2><button id="access-close" class="text-button" type="button">Close</button></div><form id="project-form"><label>New project name<input id="project-name" maxlength="100" required></label><button class="button secondary" type="submit">Create project</button></form><div id="access-members"></div><form id="member-form"><h3>Add or update project access</h3><label>Name<input id="member-name" required maxlength="100"></label><label>Email<input id="member-email" type="email" required></label><label>Initial password for a new account<input id="member-password" type="password" minlength="12" maxlength="256" autocomplete="new-password"></label><label>Project role<select id="member-role"><option value="supervisor">Supervisor · Submit reports</option><option value="planner">Planner · Approve and export</option><option value="remove">Remove project access</option></select></label><button class="button primary" type="submit">Save access</button></form><form id="password-form"><h3>Change your password</h3><label>Current password<input id="current-password" type="password" autocomplete="current-password" required minlength="12" maxlength="256"></label><label>New password<input id="new-password" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label><button class="button secondary" type="submit">Change password</button></form><p id="access-message" role="status"></p></dialog>
+
   <a class="skip-link" href="#main-content">Skip to content</a>
   <div class="app-shell">
     <aside class="sidebar" id="app-sidebar">
@@ -32,7 +35,7 @@
       <header class="topbar">
         <button class="mobile-nav-toggle icon-button" id="mobile-nav-toggle" aria-label="Open workspace navigation" aria-controls="app-sidebar" aria-expanded="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg></button>
         <div class="breadcrumb">Workspace <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 5 5 5-5 5"/></svg> <strong id="breadcrumb">Overview</strong></div>
-        <div class="top-actions"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 2h8l4 4v12H4zM12 2v5h4"/></svg><span id="schedule-chip" class="schedule-chip">No schedule imported</span></div>
+        <div class="top-actions"><select id="project-select" aria-label="Current project"></select><button id="access-open" class="text-button" type="button">Projects &amp; access</button><span id="account-name"></span><span id="account-role"></span><button id="sign-out" class="text-button" type="button">Sign out</button><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 2h8l4 4v12H4zM12 2v5h4"/></svg><span id="schedule-chip" class="schedule-chip">No schedule imported</span></div>
       </header>
       <div class="content">
         <div id="connection-banner" class="connection-banner" role="status" hidden><span id="connection-copy"></span><button id="sync-now" class="text-button" type="button">Reconnect</button></div>
@@ -60,7 +63,7 @@
             </div>
           </div>
           <section id="document-review" class="panel document-review" hidden aria-labelledby="document-review-title"><div class="panel-heading"><div><h2 id="document-review-title">Review extracted text</h2><p class="muted">Check the original scan, especially names, dates, and activity IDs.</p></div><button id="document-close" class="text-button" type="button">Close preview</button></div><a id="document-original" class="text-button" target="_blank" rel="noopener">Download original source →</a><div id="document-pages"></div><div class="form-footer"><span class="field-help">The original file and extraction remain attached to your report.</span><button id="document-submit" class="button primary" type="button">Submit reviewed text</button></div></section>
-          <section class="panel device-reports" aria-labelledby="device-reports-title"><div class="panel-heading"><div><h2 id="device-reports-title">Saved on this device</h2><p class="muted">Submitted offline reports sync when the server returns. Scans and recordings wait for your review.</p></div><button id="retry-outbox" class="text-button" type="button">Sync reports</button></div><div id="device-reports-list"></div><p class="field-help">Browser storage belongs to this device and browser profile. Clearing site data removes unsynced work.</p></section>
+          <section class="panel device-reports" aria-labelledby="device-reports-title"><div class="panel-heading"><div><h2 id="device-reports-title">Saved on this device</h2><p class="muted">Submitted offline reports sync when the server returns. Scans and recordings wait for your review.</p></div><button id="retry-outbox" class="text-button" type="button">Sync reports</button></div><div id="server-recovery-list" aria-live="polite"></div><div id="device-reports-list"></div><p class="field-help">Browser storage belongs to this device and browser profile. Clearing site data removes unsynced work.</p></section>
           <div id="capture-result" aria-live="polite"></div>
         </section>
         <section id="view-review" class="view" aria-labelledby="review-title"><div class="page-heading"><div><h1 id="review-title">Review queue <span id="review-count" class="heading-count">0</span></h1><p class="lead">Check the field evidence, then confirm the activity and actual date.</p></div></div><div id="review-list" class="review-list"></div></section>
@@ -92,6 +95,7 @@
     </main>
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/auth.js" defer></script>
   <script src="/offline.js" defer></script>
   <script src="/capture.js" defer></script>
   <script src="/analytics.js" defer></script>

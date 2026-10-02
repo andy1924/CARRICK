@@ -4,6 +4,6 @@ The current `engine.py` handles schedule parsing, rule-based event extraction, l
 
 `duplicates.py` supplies conservative report identity and review-only similarity flags. `validation.py` checks actual conflicts, competing claims, and FS/SS/FF/SF graph constraints. `routing.py` loads explicitly activated policies tied to reviewed evidence, model configuration, code revision, and supported cohorts. `usage.py` and `quality.py` supply content-free accounting and evaluation statistics; `scripts/quality.py` exports independent-label templates, evaluates reviewed cases, and creates gated policy artifacts. No new production results or calibrated artifact are provided by these code additions.
 
-For a shared deployment, these operations should become retryable jobs keyed by source ID and processing version. Native schedule export validation remains planned. See [reliability and calibration](../../docs/quality/reliability-and-calibration.md).
+For a shared deployment, these operations should become retryable jobs keyed by source ID and processing version. `xer_output.py` validates approved actuals, applies constrained TASK field updates, preserves other records, and checks parser reimport. Oracle P6 acceptance remains external. See [reliability and calibration](../../docs/quality/reliability-and-calibration.md).
 
 See [system architecture](../../docs/architecture/system.md).

@@ -1,0 +1,1 @@
+"""Carrick isolated verification fixtures."""

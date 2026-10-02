@@ -73,7 +73,7 @@ sequenceDiagram
 
 ## Current and later technology direction
 
-- **Current:** plain JavaScript web client, Python standard-library API, synchronous rule and optional AI engines, and SQLite. The app binds to localhost and has no production authentication. See [grounded AI matching](ai-rag.md).
+- **Current:** plain JavaScript web client, Python standard-library API, synchronous rule and optional AI engines, and SQLite. The app binds to localhost and provides password accounts, cookie sessions, and project-scoped roles. Shared deployment still needs HTTPS hosting and operational hardening. See [access and recovery](access-output-recovery.md). See [grounded AI matching](ai-rag.md).
 - **Later:** a typed API, separate job worker, PostgreSQL, durable queue, and versioned file storage. Calibrate semantic retrieval and reranking on a reviewed matching benchmark.
 - Heavy parsing or inference should not rely on in-process API background tasks in a shared deployment.
 

@@ -20,7 +20,7 @@ window.CarrickCapture = (() => {
     $("#voice-preview").hidden = false;
     $("#voice-transcribe").disabled = false;
     $("#voice-text").value = draft.receipt?.text || "";
-    $("#voice-transcript").hidden = !draft.receipt;
+    $("#voice-transcript").hidden = !draft.receipt && !draft.failedAssetId;
     $("#voice-status").textContent = draft.receipt ? "Transcript ready. Check the wording before using it." : "Recording saved on this device. Transcribe when the local server is available.";
   }
 
@@ -73,7 +73,10 @@ window.CarrickCapture = (() => {
       voiceDraft.receipt = receipt;
       await app.offline.put("drafts", voiceDraft);
       showVoice(voiceDraft); notify();
-    } catch (error) { app.toast(error.message, true); }
+    } catch (error) {
+      if(error.data?.capture_asset_id){voiceDraft.failedAssetId=error.data.capture_asset_id;await app.offline.put("drafts",voiceDraft);showVoice(voiceDraft);$("#voice-status").textContent="Speech is unavailable. Recording retained. Retry transcription or type the words you hear and confirm them.";}
+      app.toast(error.message,true);
+    }
     finally { button.disabled = false; button.textContent = "Transcribe locally"; }
   }
 
@@ -83,7 +86,7 @@ window.CarrickCapture = (() => {
     $("#document-review").hidden = false;
     $("#document-review-title").textContent = `Review ${receipt.filename}`;
     $("#document-original").href = receipt.original_url;
-    $("#document-pages").innerHTML = receipt.pages.map((page, index) => `<div class="extracted-page"><div class="page-source"><strong>${page.source_row ? `Page ${page.source_row}` : "Source text"}</strong><span>${safe(({ tesseract: "Printed text OCR", local_vision: "Handwriting transcription", text_layer: "PDF text layer", text: "Original text" })[page.method] || page.method)}${page.confidence != null ? ` · OCR confidence ${page.confidence}%` : ""}</span></div>${page.warnings.map(warning => `<p class="capture-warning">${safe(warning)}</p>`).join("")}<label for="document-page-${index}">Confirm or correct the extracted text</label><textarea id="document-page-${index}" data-page="${index}" rows="5" maxlength="12000">${safe(draft.reviewedPages?.[index]?.text ?? page.text)}</textarea></div>`).join("");
+    $("#document-pages").innerHTML = receipt.pages.map((page, index) => `<div class="extracted-page"><div class="page-source"><strong>${page.source_row ? `Page ${page.source_row}` : "Source text"}</strong><span>${safe(({ tesseract: "Printed text OCR", local_vision: "Handwriting transcription", text_layer: "PDF text layer", text: "Original text" })[page.method] || page.method)}${page.confidence != null ? ` · OCR confidence ${page.confidence}%` : ""}</span></div>${page.warnings.map(warning => `<p class="capture-warning">${safe(warning)}</p>`).join("")}<p class="capture-warning">Source extraction needs your review. It has not been independently verified.</p><label for="document-page-${index}">Confirm or correct the extracted text</label><textarea id="document-page-${index}" data-page="${index}" rows="5" maxlength="12000">${safe(draft.reviewedPages?.[index]?.text ?? page.text)}</textarea></div>`).join("");
     document.querySelectorAll("#document-pages textarea").forEach(input => input.addEventListener("input", () => {
       documentDraft.reviewedPages = [...document.querySelectorAll("#document-pages textarea")].map(page => ({ text: page.value }));
       app.offline.put("drafts", documentDraft).catch(error => app.toast(error.message, true));
@@ -97,7 +100,11 @@ window.CarrickCapture = (() => {
     if (!app.offline.reachable) return app.toast("Scan saved on this device. Reconnect to extract its text.");
     const suffix = draft.filename.split(".").pop().toLowerCase();
     const content = ["txt", "eml"].includes(suffix) ? await draft.blob.text() : await blobBase64(draft.blob);
-    draft.receipt = await app.post("/api/documents/extract", { filename: draft.filename, content, handwriting: draft.handwriting });
+    try {draft.receipt = await app.post("/api/documents/extract", { filename: draft.filename, content, handwriting: draft.handwriting });}
+    catch(error){
+      if(error.data?.capture_asset_id){draft.manual=true;draft.receipt={filename:draft.filename,capture_asset_id:error.data.capture_asset_id,original_url:`/api/captures/${error.data.capture_asset_id}/original`,pages:[{source_row:null,text:"",method:"manual",confidence:null,warnings:["OCR is unavailable. Original retained. Type the source text and review it before submission."]}]};await app.offline.put("drafts",draft);showDocument(draft);}
+      throw error;
+    }
     await app.offline.put("drafts", draft); notify(); showDocument(draft);
   }
 
@@ -122,13 +129,14 @@ window.CarrickCapture = (() => {
     try {
       const pages = [...document.querySelectorAll("#document-pages textarea")].map(input => ({ text: input.value }));
       if (!pages.some(page => page.text.trim())) throw new Error("Add readable report text before submitting.");
+      if(documentDraft.manual){if(!app.offline.reachable)throw new Error("Manual transcription is saved in this draft. Reconnect to attach it to the original.");await app.post(`/api/captures/${documentDraft.receipt.capture_asset_id}/manual`,{text:pages.map(p=>p.text).join("\n\n")});}
       const payload = { source_kind: "document", capture_asset_id: documentDraft.receipt.capture_asset_id, filename: documentDraft.filename,
-        reviewed_pages: pages, ...metadata(), analysis_mode: app.isAi() ? "ai" : "rules", schedule_version: documentDraft.scheduleVersion || app.getSchedule(), client_request_id: app.offline.id() };
+        reviewed_pages: pages, source_reviewed:true, ...metadata(), analysis_mode: app.isAi() ? "ai" : "rules", schedule_version: documentDraft.scheduleVersion || app.getSchedule(), client_request_id: app.offline.id() };
       if (!app.offline.reachable) {
         await app.offline.enqueue(payload);
         app.toast("Reviewed document saved for submission when connected.");
       } else {
-        try { const result = await app.post("/api/reports", payload); app.toast(result.duplicate ? "Repeat document retained in its existing source group." : `${result.events.length} document events ready for planner review.`); }
+        try { const result = await app.offline.send(payload); app.toast(!result ? "Report saved offline." : result.duplicate ? "Repeat document retained in its existing source group." : `${result.events.length} document events ready for planner review.`); }
         catch (error) {
           if (error.status === 409) { await app.offline.enqueue(payload, { status: "conflict", error: error.message }); app.toast("Document saved. Review it against the current schedule in Saved on this device."); }
           else { if (!error.transport) throw error; await app.offline.enqueue(payload); app.toast("Reviewed document saved for submission when connected."); }
@@ -153,6 +161,18 @@ window.CarrickCapture = (() => {
     restoreVoiceSource(source) { voiceSource = source; $("#report-source-note").hidden = false; },
     clearVoiceSource() { voiceSource = null; $("#report-source-note").hidden = true; },
     uploadDocument, openDraft,
+    async restoreServerCapture(receipt) {
+      const response=await fetch(receipt.original_url,{headers:window.CarrickAuth.headers()});
+      if(!response.ok)throw new Error("The saved original could not be opened");
+      const kind=receipt.kind || (receipt.pages?"document":"voice");
+      const draft={id:app.offline.id(),kind,filename:receipt.filename,blob:await response.blob(),savedAt:new Date().toISOString(),scheduleVersion:app.getSchedule(),...metadata()};
+      if(kind==="document" && !receipt.pages){
+        draft.manual=true;
+        draft.receipt={...receipt,pages:[{source_row:null,text:"",method:"manual",confidence:null,warnings:["Original retained. Type the source text and review it before submission."]}]};
+      }else if(kind==="voice" && !receipt.text){draft.failedAssetId=receipt.capture_asset_id;}
+      else draft.receipt=receipt;
+      await app.offline.put("drafts",draft);await openDraft(draft);notify();
+    },
     async completeVoice() {
       if (voiceSource) await app.offline.remove("drafts", voiceSource.draftId);
       voiceSource = null; $("#report-source-note").hidden = true; notify();
@@ -163,7 +183,8 @@ window.CarrickCapture = (() => {
       $("#voice-transcribe").addEventListener("click", transcribe);
       $("#voice-use").addEventListener("click", async () => {
         const text = $("#voice-text").value.trim();
-        if (!voiceDraft?.receipt || !text) return app.toast("Transcribe the recording and check its text first.", true);
+        if ((!voiceDraft?.receipt && !voiceDraft?.failedAssetId) || !text) return app.toast("Transcribe the recording or type its words, then check the text first.", true);
+        if(!voiceDraft.receipt && voiceDraft.failedAssetId){try{voiceDraft.receipt=await app.post(`/api/captures/${voiceDraft.failedAssetId}/manual`,{text});await app.offline.put("drafts",voiceDraft);}catch(error){return app.toast(error.message,true);}}
         if ($("#report-text").value.trim() && !window.confirm("Replace the current report text with this transcript?")) return;
         $("#report-text").value = text;
         voiceSource = { assetId: voiceDraft.receipt.capture_asset_id, draftId: voiceDraft.id, filename: voiceDraft.filename, scheduleVersion: voiceDraft.scheduleVersion };

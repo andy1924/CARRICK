@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import base64
 import hashlib
 import io
 import json
@@ -30,6 +31,8 @@ from services.worker.routing import routing_details, pipeline_for, policy_for
 from services.worker.usage import active_calls
 from services.api.history import enrich, query_history
 from services.api.quality import quality_status
+from services.api import auth
+from services.worker.xer_output import progress_output
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +58,7 @@ def uid(prefix: str) -> str:
 def connection() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB_PATH, timeout=20)
+    DB_PATH.chmod(0o600)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
     return db
@@ -132,12 +136,13 @@ def init_db() -> None:
           elapsed_ms REAL NOT NULL, queue_ms REAL NOT NULL, failed INTEGER NOT NULL,
           error_type TEXT, model_calls TEXT NOT NULL, created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS submissions(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,payload TEXT NOT NULL,checksum TEXT NOT NULL,status TEXT NOT NULL,error_type TEXT,report_id TEXT,created_at TEXT NOT NULL);
         """)
         columns = {row["name"] for row in db.execute("PRAGMA table_info(events)")}
         for name, definition in (("analysis_mode", "TEXT NOT NULL DEFAULT 'rules'"),
                                  ("model_name", "TEXT"), ("clarification_question", "TEXT"),
                                  ("clarification_answer", "TEXT"), ("checks", "TEXT NOT NULL DEFAULT '[]'"),
-                                 ("routing", "TEXT NOT NULL DEFAULT '{}'"), ("duplicate_of_event", "TEXT")):
+                                 ("routing", "TEXT NOT NULL DEFAULT '{}'"), ("duplicate_of_event", "TEXT"), ("verification", "TEXT NOT NULL DEFAULT '{}'")):
             if name not in columns:
                 db.execute(f"ALTER TABLE events ADD COLUMN {name} {definition}")
         report_columns = {row["name"] for row in db.execute("PRAGMA table_info(reports)")}
@@ -155,9 +160,16 @@ def init_db() -> None:
           CREATE INDEX IF NOT EXISTS events_history_idx ON events(discipline,status,event_date);
           CREATE INDEX IF NOT EXISTS events_report_idx ON events(report_id);
         """)
+        auth.init_auth(db)
+        export_columns={row["name"] for row in db.execute("PRAGMA table_info(exports)")}
+        for field in ("xer_content","changeset"):
+            if field not in export_columns: db.execute(f"ALTER TABLE exports ADD COLUMN {field} TEXT")
+    if DB_PATH.exists(): DB_PATH.chmod(0o600)
 
 
 def latest_version(db: sqlite3.Connection) -> sqlite3.Row | None:
+    if auth.project_context.get():
+        return db.execute("SELECT * FROM schedule_versions WHERE project_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",(auth.project_context.get(),)).fetchone()
     return db.execute("SELECT * FROM schedule_versions ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
 
 
@@ -218,6 +230,7 @@ def event_record(row: sqlite3.Row) -> dict:
     value["warnings"] = json.loads(value["warnings"])
     value["checks"] = json.loads(value.get("checks") or "[]")
     value["routing"] = json.loads(value.get("routing") or "{}")
+    value["verification"] = json.loads(value.get("verification") or "{}")
     return value
 
 
@@ -247,8 +260,8 @@ def import_schedule(filename: str, content: str) -> dict:
     version_id = uid("sch")
     checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
     with db_session() as db:
-        db.execute("INSERT INTO schedule_versions VALUES (?,?,?,?,?,?)",
-                   (version_id, filename, file_format, checksum, content, now()))
+        db.execute("INSERT INTO schedule_versions (id,filename,format,checksum,content,created_at,project_id) VALUES (?,?,?,?,?,?,?)",
+                   (version_id, filename, file_format, checksum, content, now(),auth.project_context.get() or "prj_default"))
         db.executemany("""INSERT INTO activities
           (version_id,source_key,external_id,name,wbs,discipline,location,
            planned_start,planned_finish,actual_start,actual_finish,status)
@@ -269,6 +282,8 @@ def _report_rows(payload: dict) -> list[dict]:
             asset = db.execute("SELECT * FROM capture_assets WHERE id=?", (payload["capture_asset_id"],)).fetchone()
         if not asset or asset["kind"] != kind or kind not in {"document", "voice"}:
             raise ValueError("The capture source could not be found")
+        if auth.project_context.get() and asset["project_id"] != auth.project_context.get():
+            raise auth.AccessError("Capture source not found in this project",404)
         metadata = json.loads(asset["metadata"])
         originals = metadata["pages"] if kind == "document" else [{"text": metadata["text"], "source_row": None, "warnings": metadata["warnings"]}]
         reviewed = payload.get("reviewed_pages") if kind == "document" else [{"text": payload.get("content", "")}]
@@ -315,6 +330,9 @@ def existing_report_request(db: sqlite3.Connection, request_id: str, checksum: s
     receipt = db.execute("SELECT * FROM report_requests WHERE id=?", (request_id,)).fetchone()
     if not receipt:
         return None
+    if auth.project_context.get():
+        project=db.execute("SELECT v.project_id FROM reports r JOIN schedule_versions v ON v.id=r.version_id WHERE r.id=?",(receipt["report_id"],)).fetchone()
+        if not project or project["project_id"]!=auth.project_context.get(): raise auth.AccessError("Report request not found",404)
     if receipt["payload_checksum"] != checksum:
         raise ScheduleConflict("This saved report was changed after submission. Save a new report instead.")
     return report_result(db, receipt["report_id"], replayed=True)
@@ -328,17 +346,33 @@ def save_capture(kind: str, payload: dict, metadata: dict) -> dict:
         raise ValueError("Capture files must be 10 MB or smaller")
     asset_id = uid("cap")
     CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    CAPTURE_DIR.chmod(0o700)
     target = CAPTURE_DIR / asset_id
     target.write_bytes(raw)
     target.chmod(0o600)
     try:
         with db_session() as db:
-            db.execute("INSERT INTO capture_assets VALUES (?,?,?,?,?,?)",
-                       (asset_id, kind, filename, hashlib.sha256(raw).hexdigest(), json.dumps(metadata), now()))
+            db.execute("INSERT INTO capture_assets (id,kind,filename,checksum,metadata,created_at,project_id) VALUES (?,?,?,?,?,?,?)",
+                       (asset_id, kind, filename, hashlib.sha256(raw).hexdigest(), json.dumps(metadata), now(),auth.project_context.get() or "prj_default"))
     except Exception:
         target.unlink(missing_ok=True)
         raise
     return {"capture_asset_id": asset_id, "filename": filename, "original_url": f"/api/captures/{asset_id}/original", **metadata}
+
+
+def process_capture(kind,payload,asset_id=None):
+    options={key:payload.get(key) for key in ("handwriting","language")}
+    receipt=save_capture(kind,payload,{"verification":"needs_review","processing_status":"received","capture_options":options}) if not asset_id else {"capture_asset_id":asset_id,"filename":payload["filename"],"original_url":f"/api/captures/{asset_id}/original"}
+    try:
+        metadata={"pages":extract_document(payload["filename"],payload["content"],bool(payload.get("handwriting")))} if kind=="document" else transcribe_audio(payload["filename"],payload["content"],payload.get("language") or "")
+        metadata.update(verification="needs_review",processing_status="extracted",capture_options=options)
+    except Exception as exc:
+        metadata={"verification":"needs_review","processing_status":"needs_retry","error_type":type(exc).__name__,"capture_options":options}
+        with db_session() as db: db.execute("UPDATE capture_assets SET metadata=? WHERE id=?",(json.dumps(metadata),receipt["capture_asset_id"]))
+        exc.capture_asset_id=receipt["capture_asset_id"]
+        raise
+    with db_session() as db: db.execute("UPDATE capture_assets SET metadata=? WHERE id=?",(json.dumps(metadata),receipt["capture_asset_id"]))
+    return {**receipt,**metadata}
 
 
 def analytics_payload(payload: dict | None = None) -> dict:
@@ -358,6 +392,17 @@ def analytics_payload(payload: dict | None = None) -> dict:
 
 
 def submit_report(payload: dict) -> dict:
+    payload=dict(payload)
+    submission_id=payload.get("client_request_id") or uid("sub")
+    payload["client_request_id"]=submission_id
+    if not isinstance(submission_id,str) or len(submission_id)>100: raise ValueError("Invalid request ID")
+    project=auth.project_context.get() or "prj_default"
+    checksum=hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()
+    with db_session() as db:
+        db.execute("BEGIN IMMEDIATE")
+        old=db.execute("SELECT * FROM submissions WHERE id=?",(submission_id,)).fetchone()
+        if old and (old["project_id"]!=project or old["checksum"]!=checksum): raise ScheduleConflict("Saved submission identity changed; create a new request")
+        db.execute("INSERT OR IGNORE INTO submissions VALUES (?,?,?,?,?,?,?,?)",(submission_id,project,json.dumps(payload),checksum,"received","",None,now()))
     started, result, error_type = time.perf_counter(), None, ""
     calls = []
     token = active_calls.set(calls)
@@ -369,15 +414,20 @@ def submit_report(payload: dict) -> dict:
             return result
     except Exception as exc:
         error_type = type(exc).__name__
+        exc.submission_id=submission_id
         raise
     finally:
         active_calls.reset(token)
         try:
             with db_session() as db:
-                db.execute("INSERT INTO processing_runs VALUES (?,?,?,?,?,?,?,?,?)",
+                db.execute("UPDATE submissions SET status=?,error_type=?,report_id=? WHERE id=?",("failed" if error_type else "complete",error_type,result.get("report_id") if result else None,submission_id))
+                parent=payload.get("fallback_for") or payload.get("supersedes_submission")
+                if result and parent:
+                    db.execute("UPDATE submissions SET status='complete',report_id=? WHERE id=? AND project_id=?",(result["report_id"],parent,project))
+                db.execute("INSERT INTO processing_runs (id,report_id,mode,elapsed_ms,queue_ms,failed,error_type,model_calls,created_at,project_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
                            (uid("run"), result.get("report_id") if result else None, payload.get("analysis_mode", "rules"),
                             round((time.perf_counter()-started)*1000, 2), round((acquired-started)*1000, 2),
-                            int(bool(error_type)), error_type, json.dumps(calls), now()))
+                            int(bool(error_type)), error_type, json.dumps(calls), now(),auth.project_context.get() or "prj_default"))
         except sqlite3.Error:
             # A telemetry write must not turn a committed report into a failed receipt.
             pass
@@ -499,6 +549,9 @@ def _submit_report(payload: dict) -> dict:
                json.dumps(event["candidates"]), json.dumps(event["warnings"]), analysis_mode,
                client.model if client else "", event.get("clarification_question", ""), json.dumps(event["checks"]), json.dumps(event["routing"])))
             event["id"] = event_id
+            verification={"source":"confirmed_by_submitter" if payload.get("source_reviewed") else "original_text", "analysis":"ai_needs_planner_review" if client else "rules_need_planner_review"}
+            db.execute("UPDATE events SET verification=? WHERE id=?",(json.dumps(verification),event_id))
+            event["verification"]=verification
         if request_id:
             db.execute("INSERT INTO report_requests VALUES (?,?,?)", (request_id, checksum, report_id))
         return {"report_id": report_id, "schedule_version": version_id,
@@ -519,9 +572,9 @@ def clarify_event(event_id: str, answer: str) -> dict:
         active_calls.reset(token)
         try:
             with db_session() as db:
-                db.execute("INSERT INTO processing_runs VALUES (?,?,?,?,?,?,?,?,?)",
+                db.execute("INSERT INTO processing_runs (id,report_id,mode,elapsed_ms,queue_ms,failed,error_type,model_calls,created_at,project_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
                            (uid("run"), report_id, "clarification", round((time.perf_counter()-started)*1000, 2),
-                            0, int(bool(failure)), failure, json.dumps(calls), now()))
+                            0, int(bool(failure)), failure, json.dumps(calls), now(),auth.project_context.get() or "prj_default"))
         except sqlite3.Error:
             pass
 
@@ -576,7 +629,7 @@ def _clarify_event(event_id: str, answer: str) -> dict:
         if changed.rowcount != 1:
             raise ValueError("This event already has a decision")
         db.execute("INSERT INTO audit (event_id,action,actor,detail,created_at) VALUES (?,?,?,?,?)",
-                   (event_id, "clarify", "Supervisor", json.dumps({"answer": answer,
+                   (event_id, "clarify", (auth.user_context.get() or {}).get("name") or "Supervisor", json.dumps({"answer": answer,"user_id":(auth.user_context.get() or {}).get("id"),
                     "candidate_ids": [candidate["activity_id"] for candidate in candidates]}), now()))
     return {"id": event_id, "report_id": event["report_id"], "candidates": candidates, "warnings": warnings, "checks": checks, "routing": routing,
             "clarification_question": question if ambiguous else "", "clarification_answer": answer}
@@ -587,7 +640,7 @@ def decide_event(event_id: str, payload: dict) -> dict:
     if action not in {"approve", "reject", "record"}:
         raise ValueError("Action must be approve, reject, or record")
     reason = (payload.get("reason") or "").strip()
-    actor = (payload.get("actor") or "Planner").strip()[:80]
+    actor = (auth.user_context.get() or {}).get("name") or (payload.get("actor") or "Planner").strip()[:80]
     with db_session() as db:
         db.execute("BEGIN IMMEDIATE")
         event = db.execute("""SELECT e.*, r.version_id FROM events e
@@ -650,7 +703,7 @@ def decide_event(event_id: str, payload: dict) -> dict:
                   decision_reason=?, decided_at=? WHERE id=?""",
                   (status, activity_id, event_date, reason, now(), event_id))
         db.execute("INSERT INTO audit (event_id,action,actor,detail,created_at) VALUES (?,?,?,?,?)",
-                   (event_id, "consolidate" if status == "duplicate" else action, actor, json.dumps({"activity_id": activity_id, "event_date": event_date, "reason": reason}), now()))
+                   (event_id, "consolidate" if status == "duplicate" else action, actor, json.dumps({"activity_id": activity_id, "event_date": event_date, "reason": reason,"user_id":(auth.user_context.get() or {}).get("id")}), now()))
         return {"id": event_id, "status": status, "activity_id": activity_id, "event_date": event_date}
 
 
@@ -702,15 +755,19 @@ def build_export() -> dict:
             writer.writerow([version["id"], row["selected_activity"], row["kind"], row["event_date"],
                              row["discipline"], row["report_id"], row["source_row"] or "", row["id"], row["decided_at"]])
         content = stream.getvalue()
+        cumulative=[dict(row) for row in db.execute("SELECT e.* FROM events e JOIN reports r ON r.id=e.report_id WHERE r.version_id=? AND e.status IN ('approved','exported') AND e.kind IN ('actual_start','actual_finish') ORDER BY e.decided_at,e.id",(version["id"],))]
+        xer_content,changeset=progress_output(version["content"],version["filename"],cumulative)
         export_id = uid("exp")
         manifest = {"schedule_version": version["id"], "source_checksum": version["checksum"],
                     "event_ids": [row["id"] for row in rows], "row_count": len(rows),
                     "output_checksum": hashlib.sha256(content.encode()).hexdigest(),
                     "format": "csv", "created_at": now()}
-        db.execute("INSERT INTO exports VALUES (?,?,?,?,?)",
+        manifest.update(xer_available=bool(xer_content),round_trip_verified=changeset["round_trip_verified"],oracle_import_verified=False)
+        db.execute("INSERT INTO exports (id,version_id,content,manifest,created_at) VALUES (?,?,?,?,?)",
                    (export_id, version["id"], content, json.dumps(manifest), now()))
+        db.execute("UPDATE exports SET xer_content=?,changeset=? WHERE id=?",(xer_content,json.dumps(changeset),export_id))
         db.executemany("UPDATE events SET status='exported' WHERE id=?", [(row["id"],) for row in rows])
-        return {"id": export_id, "manifest": manifest, "download": f"/api/exports/{export_id}.csv"}
+        return {"id": export_id, "manifest": manifest, "download": f"/api/exports/{export_id}.csv", "xer_download":f"/api/exports/{export_id}.xer" if xer_content else None,"changeset_download":f"/api/exports/{export_id}.json"}
 
 
 def check_proposal(event_id, payload):
@@ -770,6 +827,42 @@ def preview_report(payload: dict) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def authorize(self,path,mutating=False):
+        self.context_tokens=[]
+        self.session_cookie=None
+        auth.valid_host(self.headers)
+        if not path.startswith("/api/") or path in {"/api/health","/api/preview","/api/auth/status","/api/auth/setup","/api/auth/login"}:
+            if mutating: auth.same_origin(self.headers)
+            return None
+        with db_session() as db:
+            account=auth.session(db,self.headers)
+            if mutating: auth.require_csrf(self.headers,account)
+            self.context_tokens.append((auth.user_context,auth.user_context.set({"id":account["user_id"],"name":account["name"]})))
+            if path not in {"/api/auth/me","/api/auth/logout","/api/auth/password","/api/projects"}:
+                planner=mutating and (path.startswith("/api/schedules/") or path.endswith("/decision") or path=="/api/exports" or path=="/api/demo/load")
+                headers={"X-Carrick-Project":self.headers.get("X-Carrick-Project","")}
+                resource_id=re.search(r"/(cap_[a-f0-9]+|exp_[a-f0-9]+)",path)
+                if not mutating and not headers.get("X-Carrick-Project") and resource_id:
+                    key=resource_id.group(1)
+                    query="SELECT project_id FROM capture_assets WHERE id=?" if key.startswith("cap_") else "SELECT v.project_id FROM exports e JOIN schedule_versions v ON v.id=e.version_id WHERE e.id=?"
+                    resource=db.execute(query,(key,)).fetchone()
+                    if not resource: raise auth.AccessError("Resource not found",404)
+                    headers["X-Carrick-Project"]=resource["project_id"]
+                project,role=auth.require_project(db,headers,account,planner=planner,owner=path=="/api/members")
+                self.context_tokens.append((auth.project_context,auth.project_context.set(project)))
+                identifier=re.search(r"/(evt_[a-f0-9]+|cap_[a-f0-9]+|exp_[a-f0-9]+)",path)
+                if identifier:
+                    key=identifier.group(1)
+                    if key.startswith("evt_"): query="SELECT v.project_id FROM events e JOIN reports r ON r.id=e.report_id JOIN schedule_versions v ON v.id=r.version_id WHERE e.id=?"
+                    elif key.startswith("cap_"): query="SELECT project_id FROM capture_assets WHERE id=?"
+                    else: query="SELECT v.project_id FROM exports e JOIN schedule_versions v ON v.id=e.version_id WHERE e.id=?"
+                    resource=db.execute(query,(key,)).fetchone()
+                    if not resource or resource["project_id"]!=project: raise auth.AccessError("Resource not found",404)
+            return account
+
+    def clear_context(self):
+        for variable,token in reversed(getattr(self,"context_tokens",[])): variable.reset(token)
+
     def log_message(self, format: str, *args: object) -> None:
         print("%s %s" % (self.address_string(), format % args))
 
@@ -779,6 +872,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options","nosniff")
+        self.send_header("X-Frame-Options","DENY")
+        if getattr(self,"session_cookie",None): self.send_header("Set-Cookie",self.session_cookie)
         self.end_headers()
         self.wfile.write(body)
 
@@ -794,6 +890,27 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         try:
+            account=self.authorize(path)
+            if path=="/api/auth/status":
+                with db_session() as db: return self.respond(200,{"setup_required":not bool(db.execute("SELECT 1 FROM users LIMIT 1").fetchone())})
+            if path in {"/api/auth/me","/api/projects"}:
+                with db_session() as db:
+                    projects=auth.memberships(db,account["user_id"])
+                    return self.respond(200,{"user":{"id":account["user_id"],"name":account["name"],"email":account["email"]},"csrf":account["csrf"],"projects":projects})
+            if path=="/api/members":
+                with db_session() as db: return self.respond(200,[dict(row) for row in db.execute("SELECT u.id,u.email,u.name,m.role FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=?",(auth.project_context.get(),))])
+            if path=="/api/submissions":
+                with db_session() as db:
+                    rows=[dict(row) for row in db.execute("SELECT * FROM submissions WHERE project_id=? AND status<>'complete' ORDER BY created_at DESC LIMIT 50",(auth.project_context.get(),))]
+                    return self.respond(200,[{key:row[key] for key in ("id","status","error_type","created_at")}|{"filename":json.loads(row["payload"]).get("filename",""),"analysis_mode":json.loads(row["payload"]).get("analysis_mode","rules")} for row in rows])
+            if path=="/api/captures/incomplete":
+                with db_session() as db:
+                    return self.respond(200,[{"capture_asset_id":row["id"],"filename":row["filename"],"kind":row["kind"],"original_url":f"/api/captures/{row['id']}/original","metadata":json.loads(row["metadata"])} for row in db.execute("SELECT * FROM capture_assets WHERE project_id=? AND json_extract(metadata,'$.processing_status') IN ('received','needs_retry') ORDER BY created_at DESC LIMIT 50",(auth.project_context.get(),))])
+            match=re.fullmatch(r"/api/submissions/([A-Za-z0-9_-]{1,100})",path)
+            if match:
+                with db_session() as db: row=db.execute("SELECT * FROM submissions WHERE id=? AND project_id=?",(match.group(1),auth.project_context.get())).fetchone()
+                if not row: return self.respond(404,{"error":"Saved submission not found"})
+                return self.respond(200,{"id":row["id"],"status":row["status"],"payload":json.loads(row["payload"])})
             if path == "/api/health":
                 return self.respond(200, {"status": "ok"})
             if path == "/api/ai/status":
@@ -831,25 +948,32 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(404, {"error": "Capture source not found"})
                 if not match.group(2):
                     return self.respond(200, {"capture_asset_id": asset["id"], "filename": asset["filename"],
-                                             "checksum": asset["checksum"], **json.loads(asset["metadata"])})
+                                             "kind":asset["kind"],"original_url":f"/api/captures/{asset['id']}/original","checksum": asset["checksum"], **json.loads(asset["metadata"])})
                 body = (CAPTURE_DIR / asset["id"]).read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Disposition", "attachment; filename=carrick-source" + Path(asset["filename"]).suffix)
+                suffix=Path(asset["filename"]).suffix
+                if not re.fullmatch(r"\.[A-Za-z0-9]{1,8}",suffix): suffix=".bin"
+                self.send_header("Content-Disposition", "attachment; filename=carrick-source" + suffix)
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options","nosniff")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 return self.wfile.write(body)
-            match = re.fullmatch(r"/api/exports/(exp_[a-f0-9]+)\.csv", path)
+            match = re.fullmatch(r"/api/exports/(exp_[a-f0-9]+)\.(csv|xer|json)", path)
             if match:
                 with db_session() as db:
-                    row = db.execute("SELECT content FROM exports WHERE id=?", (match.group(1),)).fetchone()
+                    row = db.execute("SELECT content,xer_content,changeset FROM exports WHERE id=?", (match.group(1),)).fetchone()
                 if not row:
                     return self.respond(404, {"error": "Export not found"})
-                body = row["content"].encode("utf-8")
+                selected=row[{"csv":"content","xer":"xer_content","json":"changeset"}[match.group(2)]]
+                if selected is None: return self.respond(400,{"error":"This export has no native XER; download its validated change set"})
+                body = selected.encode("utf-8")
                 self.send_response(200)
-                self.send_header("Content-Type", "text/csv; charset=utf-8")
-                self.send_header("Content-Disposition", f"attachment; filename=carrick-progress-{match.group(1)}.csv")
+                self.send_header("Content-Type", {"csv":"text/csv; charset=utf-8","xer":"application/octet-stream","json":"application/json"}[match.group(2)])
+                self.send_header("Content-Disposition", f"attachment; filename=carrick-progress-{match.group(1)}.{match.group(2)}")
+                self.send_header("Cache-Control","no-store")
+                self.send_header("X-Content-Type-Options","nosniff")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 return self.wfile.write(body)
@@ -858,6 +982,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/landing.js": ("landing.js", "text/javascript"),
                       "/landing.css": ("landing.css", "text/css"),
                       "/app.js": ("app.js", "text/javascript"),
+                      "/auth.js": ("auth.js", "text/javascript"),
                       "/offline.js": ("offline.js", "text/javascript"),
                       "/capture.js": ("capture.js", "text/javascript"),
                       "/analytics.js": ("analytics.js", "text/javascript"),
@@ -878,15 +1003,87 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return self.wfile.write(body)
             return self.respond(404, {"error": "Not found"})
+        except auth.AccessError as exc:
+            self.respond(exc.status,{"error":str(exc),"code":"access_denied"})
         except ValueError as exc:
             self.respond(400, {"error": str(exc)})
         except Exception as exc:
             self.respond(500, {"error": str(exc)})
+        finally: self.clear_context()
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         try:
+            account=self.authorize(path,True)
             payload = self.read_json()
+            if path in {"/api/auth/setup","/api/auth/login"}:
+                if path.endswith("setup") and self.client_address[0] not in {"127.0.0.1","::1"}: raise auth.AccessError("Initial setup must be performed on the host computer")
+                with db_session() as db:
+                    token,result=auth.setup(db,payload) if path.endswith("setup") else auth.login(db,payload,self.client_address[0])
+                if not token: raise auth.AccessError("Email or password is incorrect",401)
+                self.session_cookie=auth.cookie(token)
+                return self.respond(200,result)
+            if path=="/api/auth/logout":
+                with db_session() as db: db.execute("DELETE FROM sessions WHERE token_hash=?",(account["token_hash"],))
+                self.session_cookie=auth.cookie("")
+                return self.respond(200,{"signed_out":True})
+            if path=="/api/auth/password":
+                with db_session() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    user=db.execute("SELECT * FROM users WHERE id=?",(account["user_id"],)).fetchone()
+                    import hmac
+                    if not hmac.compare_digest(auth.password_hash(payload.get("current_password"),user["password_hash"].split(":")[0]),user["password_hash"]): raise auth.AccessError("Current password is incorrect")
+                    db.execute("UPDATE users SET password_hash=? WHERE id=?",(auth.password_hash(payload.get("new_password")),user["id"]))
+                    db.execute("DELETE FROM sessions WHERE user_id=?",(user["id"],))
+                    token,result=auth.new_session(db,{key:user[key] for key in ("id","name","email")})
+                self.session_cookie=auth.cookie(token)
+                return self.respond(200,result)
+            if path=="/api/projects":
+                name=str(payload.get("name","")).strip()[:100]
+                if not name: raise ValueError("Enter a project name")
+                identifier=uid("prj")
+                with db_session() as db:
+                    db.execute("INSERT INTO projects VALUES (?,?)",(identifier,name))
+                    db.execute("INSERT INTO memberships VALUES (?,?,'owner')",(identifier,account["user_id"]))
+                return self.respond(201,{"id":identifier,"name":name,"role":"owner"})
+            if path=="/api/members":
+                role=payload.get("role")
+                if role not in {"planner","supervisor","remove"}: raise ValueError("Choose planner, supervisor, or remove access")
+                with db_session() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    row=db.execute("SELECT id FROM users WHERE email=?",(str(payload.get("email","")).strip().casefold(),)).fetchone()
+                    if role=="remove" and not row: raise LookupError("Project member not found")
+                    user={"id":row["id"]} if row else auth.create_user(db,payload)
+                    existing=db.execute("SELECT role FROM memberships WHERE project_id=? AND user_id=?",(auth.project_context.get(),user["id"])).fetchone()
+                    if existing and existing["role"]=="owner": raise ValueError("An owner's access cannot be changed here")
+                    if role=="remove": db.execute("DELETE FROM memberships WHERE project_id=? AND user_id=?",(auth.project_context.get(),user["id"]))
+                    else: db.execute("INSERT OR REPLACE INTO memberships VALUES (?,?,?)",(auth.project_context.get(),user["id"],role))
+                return self.respond(201,{"user_id":user["id"],"role":role})
+            match=re.fullmatch(r"/api/submissions/([A-Za-z0-9_-]{1,100})/retry",path)
+            if match:
+                with db_session() as db: saved=db.execute("SELECT * FROM submissions WHERE id=? AND project_id=?",(match.group(1),auth.project_context.get())).fetchone()
+                if not saved: raise LookupError("Saved submission not found")
+                original=json.loads(saved["payload"])
+                if payload.get("analysis_mode") and payload["analysis_mode"]!=original.get("analysis_mode","rules"):
+                    original.update(analysis_mode=payload["analysis_mode"],client_request_id=uid("retry"))
+                result=submit_report(original)
+                with db_session() as db: db.execute("UPDATE submissions SET status='complete',report_id=? WHERE id=?",(result["report_id"],saved["id"]))
+                return self.respond(200,result)
+            match=re.fullmatch(r"/api/captures/(cap_[a-f0-9]+)/(retry|manual)",path)
+            if match:
+                with db_session() as db: saved=db.execute("SELECT * FROM capture_assets WHERE id=?",(match.group(1),)).fetchone()
+                options=json.loads(saved["metadata"]).get("capture_options",{})
+                if match.group(2)=="manual":
+                    text=payload.get("text","")
+                    if not isinstance(text,str) or not text.strip() or len(text)>12000: raise ValueError("Enter the source text, up to 12,000 characters")
+                    row={"text":text.strip(),"source_row":None,"method":"manual","confidence":None,"warnings":["Manually transcribed source; check against the original"]}
+                    metadata={"pages":[row]} if saved["kind"]=="document" else {"text":text.strip(),"warnings":row["warnings"]}
+                    metadata.update(verification="confirmed_by_submitter",processing_status="manual",capture_options=options)
+                    with db_session() as db: db.execute("UPDATE capture_assets SET metadata=? WHERE id=?",(json.dumps(metadata),saved["id"]))
+                    return self.respond(200,{"capture_asset_id":saved["id"],"filename":saved["filename"],"original_url":f"/api/captures/{saved['id']}/original",**metadata})
+                raw=(CAPTURE_DIR/saved["id"]).read_bytes()
+                content=raw.decode() if Path(saved["filename"]).suffix.lower() in {".txt",".eml"} else base64.b64encode(raw).decode()
+                return self.respond(200,process_capture(saved["kind"],{"filename":saved["filename"],"content":content,**options},saved["id"]))
             if path == "/api/preview":
                 return self.respond(200, preview_report(payload))
             if path == "/api/schedules/import":
@@ -894,11 +1091,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/reports":
                 return self.respond(201, submit_report(payload))
             if path == "/api/documents/extract":
-                pages = extract_document(payload.get("filename", ""), payload.get("content", ""), bool(payload.get("handwriting")))
-                return self.respond(201, save_capture("document", payload, {"pages": pages}))
+                return self.respond(201, process_capture("document",payload))
             if path == "/api/voice/transcribe":
-                transcript = transcribe_audio(payload.get("filename", ""), payload.get("content", ""), payload.get("language", ""))
-                return self.respond(201, save_capture("voice", payload, transcript))
+                return self.respond(201, process_capture("voice",payload))
             if path == "/api/analytics/scenario":
                 return self.respond(200, analytics_payload(payload))
             match = re.fullmatch(r"/api/events/(evt_[a-f0-9]+)/clarify", path)
@@ -917,21 +1112,27 @@ class Handler(BaseHTTPRequestHandler):
                 fixture = ROOT / "data" / "samples" / "pump-station.xer"
                 return self.respond(201, import_schedule(fixture.name, fixture.read_text()))
             return self.respond(404, {"error": "Not found"})
+        except auth.AccessError as exc:
+            self.respond(exc.status,{"error":str(exc),"code":"access_denied"})
         except LookupError as exc:
             self.respond(404, {"error": str(exc)})
         except (AiUnavailable, AiResponseError) as exc:
-            self.respond(503, {"error": str(exc)})
+            self.respond(503, {"error": str(exc),"retryable":True,"saved_submission_id":getattr(exc,"submission_id",None),"capture_asset_id":getattr(exc,"capture_asset_id",None),"fallback_available":True})
         except ScheduleConflict as exc:
             self.respond(409, {"error": str(exc), "code": "schedule_conflict"})
         except (ValueError, ScheduleError, json.JSONDecodeError) as exc:
-            self.respond(400, {"error": str(exc)})
+            self.respond(400, {"error": str(exc),"saved_submission_id":getattr(exc,"submission_id",None),"capture_asset_id":getattr(exc,"capture_asset_id",None),"fallback_available":bool(getattr(exc,"capture_asset_id",None))})
         except Exception as exc:
-            self.respond(500, {"error": str(exc)})
+            self.respond(500, {"error": "Processing failed. The saved source can be retried.","saved_submission_id":getattr(exc,"submission_id",None),"capture_asset_id":getattr(exc,"capture_asset_id",None),"retryable":True})
+        finally: self.clear_context()
 
 
 def main() -> None:
+    load_local_env()
     init_db()
     host = os.environ.get("CARRICK_HOST", "127.0.0.1")
+    if host not in {"127.0.0.1","localhost","::1"} and not os.environ.get("CARRICK_PUBLIC_ORIGIN","").startswith("https://"):
+        raise ValueError("Shared hosting requires CARRICK_PUBLIC_ORIGIN with HTTPS and a TLS reverse proxy")
     port = int(os.environ.get("CARRICK_PORT", "8765"))
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Carrick running at http://{host}:{port}", flush=True)

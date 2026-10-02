@@ -12,7 +12,7 @@ Reduce the time and effort needed to link field progress to the correct L5/L6 sc
 
 ## Release scope
 
-The local prototype covers schedule import, typed and uploaded reports, optional printed scan OCR and local diary transcription, microphone capture with local transcription, a device-local offline outbox, cloud or local RAG, clarification, planner decisions, progress CSV export, and read-only dependency scenarios. Capture engines and model files need separate provisioning; the latest additions have not been tested in this session. The acceptance criteria below describe the fuller release and are not all complete.
+The local prototype covers schedule import, typed and uploaded reports, optional printed scan OCR and local diary transcription, microphone capture with local transcription, a device-local offline outbox, cloud or local RAG, clarification, planner decisions, progress CSV/XER/change-set export, project accounts and roles, retained-source recovery, and read-only dependency scenarios. Capture engines and model files need separate provisioning. Regression and browser suites cover integration with deterministic providers; production recognition accuracy and native Oracle P6 import remain unverified. The acceptance criteria below describe the fuller release and are not all complete.
 
 | ID | Capability | Acceptance criterion |
 | --- | --- | --- |

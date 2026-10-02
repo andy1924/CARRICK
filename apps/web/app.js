@@ -24,7 +24,7 @@ function setNavigation(open) {
 
 async function request(path, options = {}) {
   let response;
-  try { response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options }); }
+  try { response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...window.CarrickAuth.headers(), ...options.headers } }); }
   catch (failure) {
     if (failure.name === "AbortError") throw failure;
     offline.setReachable(false);
@@ -35,7 +35,7 @@ async function request(path, options = {}) {
   offline.setReachable(true);
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("json") ? await response.json() : await response.text();
-  if (!response.ok) { const error = new Error(data.error || `Request failed (${response.status})`); error.status = response.status; error.code = data.code; throw error; }
+  if (!response.ok) { const error = new Error(data.error || `Request failed (${response.status})`); error.status = response.status; error.code = data.code; error.data = data; if(response.status===401) window.CarrickAuth.showLogin("Your session expired. Sign in to retry saved reports."); throw error; }
   return data;
 }
 const post = (path, body = {}) => request(path, { method: "POST", body: JSON.stringify(body) });
@@ -176,7 +176,7 @@ function renderReview() {
     checkDecision(select.closest(".review-card"));
   }));
   $$(".decision-date").forEach(input => input.addEventListener("change", () => checkDecision(input.closest(".review-card"))));
-  if (!offline.reachable) $$(".approve-button, .reject-button, .clarify-button").forEach(button => button.disabled = true);
+  if (!offline.reachable || !["owner","planner"].includes(window.CarrickAuth.project?.role)) $$(".approve-button, .reject-button").forEach(button => button.disabled = true);
 }
 
 async function checkDecision(card) {
@@ -194,11 +194,11 @@ async function checkDecision(card) {
     panel.innerHTML = result.checks.length ? `<ul>${result.checks.map(check => `<li class="check-${safe(check.severity)}">${safe(check.message)}</li>`).join("")}</ul>` : "Activity and date pass the current checks.";
     $(".decision-note .optional",card).textContent = result.requires_reason ? "Required for these warnings" : "Optional";
     $(".decision-reason",card).required = result.requires_reason;
-    button.disabled = result.blocked || !offline.reachable;
+    button.disabled = result.blocked || !offline.reachable || !["owner","planner"].includes(window.CarrickAuth.project?.role);
   } catch (error) {
     if (Number(card.dataset.checkRevision) !== revision) return;
     panel.textContent = error.message;
-    button.disabled = !offline.reachable;
+    button.disabled = !offline.reachable || !["owner","planner"].includes(window.CarrickAuth.project?.role);
   }
 }
 
@@ -221,7 +221,7 @@ function reviewCard(event) {
   const clarification = event.analysis_mode === "ai" ? `<div class="clarification"><label>${event.clarification_answer ? "Update field context" : "Add field context"}<input class="clarification-answer" maxlength="400" placeholder="e.g. North pipeline near Pump A" value="${safe(event.clarification_answer || "")}"></label><button class="button secondary clarify-button" data-id="${safe(event.id)}">Refine suggestions</button></div>` : "";
   const shortlist = (event.candidates || []).slice(0, 3).map((candidate, index) => `<label class="candidate-option"><input type="radio" class="candidate-choice" name="activity-${safe(event.id)}" value="${safe(candidate.activity_id)}"><span><strong><span class="candidate-id">${safe(candidate.activity_id)}</span><span class="candidate-name">${safe(candidate.name)}</span></strong><small>${safe(candidate.wbs || "Imported schedule activity")}${index === 0 ? " · First suggestion" : ""}</small></span></label>`).join("");
   const kind = event.kind.replaceAll("_", " ");
-  return `<article class="panel review-card" data-event-id="${safe(event.id)}"><div class="review-head"><h2>${safe(kind.charAt(0).toUpperCase() + kind.slice(1))}</h2>${statusTag(event.status)}</div><div class="review-layout"><div class="review-source"><span class="review-label">Source report</span><blockquote>${safe(event.text)}</blockquote><div class="review-details"><div class="detail"><small>Reported date</small><strong>${displayDate(event.event_date)}</strong></div><div class="detail"><small>Discipline</small><strong>${safe(event.discipline || "Not specified")}</strong></div><div class="detail"><small>Work area</small><strong>${safe(event.location || "Not specified")}</strong></div></div>${analysisDetails}${warnings}${question}${clarification}</div><div class="review-proposal"><span class="review-label">Suggested activities · Select one to confirm</span><div class="candidate-shortlist">${shortlist || '<p class="muted">Choose an activity from the imported schedule.</p>'}</div>${evidence}<div class="review-fields"><label>${isActual ? "Schedule activity" : "Related activity (optional)"}${select}</label><label>${isActual ? "Actual date" : "Reference date"}<input class="decision-date" type="date" value="${safe(event.event_date || "")}"></label></div><div class="proposal-checks" role="status" aria-live="polite">Choose an activity to check its dates and dependencies.</div><label class="decision-note">Decision note <span class="optional">Optional</span><input class="decision-reason" placeholder="Add context for the planning team" aria-label="Decision note"></label></div></div><div class="review-actions"><span class="decision-help">Confirm the activity and date before approving.</span><button class="button secondary reject-button" data-id="${safe(event.id)}">Reject event</button><button class="button primary approve-button" data-action="${isActual ? "approve" : "record"}" data-id="${safe(event.id)}">${isActual ? "Approve actual" : "Record note"}</button></div></article>`;
+  return `<article class="panel review-card" data-event-id="${safe(event.id)}"><div class="review-head"><h2>${safe(kind.charAt(0).toUpperCase() + kind.slice(1))}</h2>${statusTag(event.status)}</div><div class="review-layout"><div class="review-source"><span class="review-label">Source report</span><blockquote>${safe(event.text)}</blockquote><div class="review-details"><div class="detail"><small>Reported date</small><strong>${displayDate(event.event_date)}</strong></div><div class="detail"><small>Discipline</small><strong>${safe(event.discipline || "Not specified")}</strong></div><div class="detail"><small>Work area</small><strong>${safe(event.location || "Not specified")}</strong></div></div>${analysisDetails}<p class="capture-source-note">Source: ${safe(({confirmed_by_submitter:"Confirmed by reporter",original_text:"Original text",needs_review:"Needs review"})[event.verification?.source] || "Needs review")} · ${event.status === "approved" || event.status === "exported" ? "Planner approved" : "Proposal needs planner review"}</p>${warnings}${question}${clarification}</div><div class="review-proposal"><span class="review-label">Suggested activities · Select one to confirm</span><div class="candidate-shortlist">${shortlist || '<p class="muted">Choose an activity from the imported schedule.</p>'}</div>${evidence}<div class="review-fields"><label>${isActual ? "Schedule activity" : "Related activity (optional)"}${select}</label><label>${isActual ? "Actual date" : "Reference date"}<input class="decision-date" type="date" value="${safe(event.event_date || "")}"></label></div><div class="proposal-checks" role="status" aria-live="polite">Choose an activity to check its dates and dependencies.</div><label class="decision-note">Decision note <span class="optional">Optional</span><input class="decision-reason" placeholder="Add context for the planning team" aria-label="Decision note"></label></div></div><div class="review-actions"><span class="decision-help">Confirm the activity and date before approving.</span><button class="button secondary reject-button" data-id="${safe(event.id)}">Reject event</button><button class="button primary approve-button" data-action="${isActual ? "approve" : "record"}" data-id="${safe(event.id)}">${isActual ? "Approve actual" : "Record note"}</button></div></article>`;
 }
 
 async function clarify(id) {
@@ -345,7 +345,7 @@ async function loadQuality() {
 function renderExports() {
   const approved = state.events.filter(e => e.status === "approved").length;
   $("#export-count").textContent = `${approved} approved event${approved === 1 ? "" : "s"} ready`;
-  $("#create-export").disabled = approved === 0 || !offline.reachable;
+  $("#create-export").disabled = approved === 0 || !offline.reachable || !["owner","planner"].includes(window.CarrickAuth.project?.role);
 }
 
 async function importFile(file) {
@@ -380,7 +380,7 @@ async function uploadSpreadsheet(file) {
       discipline: $("#report-discipline").value, location: $("#report-location").value };
     let result, conflict = false;
     if (offline.reachable) {
-      try { result = await post("/api/reports", payload); }
+      try { result = await offline.send(payload); }
       catch (error) {
         if (error.status === 409) { conflict = true; await offline.enqueue(payload, { status: "conflict", error: error.message }); await refresh(); }
         else if (!error.transport) throw error;
@@ -412,7 +412,7 @@ async function submitReport(event) {
     const voice = window.CarrickCapture.voiceSource;
     const payload = {
       source_kind: voice ? "voice" : "text", content,
-      ...(voice ? { capture_asset_id: voice.assetId, filename: voice.filename } : {}),
+      ...(voice ? { capture_asset_id: voice.assetId, filename: voice.filename, source_reviewed:true } : {}),
       analysis_mode: $("#ai-mode").checked ? "ai" : "rules",
       event_date: $("#report-date").value,
       discipline: $("#report-discipline").value,
@@ -422,7 +422,7 @@ async function submitReport(event) {
     };
     let result, conflict = false;
     if (offline.reachable) {
-      try { result = await post("/api/reports", payload); }
+      try { result = await offline.send(payload); }
       catch (error) {
         if (error.status === 409) { conflict = true; await offline.enqueue(payload, { status: "conflict", error: error.message }); await refresh(); }
         else if (!error.transport) throw error;
@@ -469,7 +469,7 @@ async function createExport() {
   button.textContent = "Preparing export…";
   try {
     const result = await post("/api/exports");
-    $("#export-result").innerHTML = !result.id ? `<div class="result-card"><strong>No new actuals to export</strong><p>${safe(result.message)}</p></div>` : `<div class="result-card"><strong>Your export is ready</strong><p>${result.manifest.row_count} approved ${result.manifest.row_count === 1 ? "event" : "events"}, with source and approval references.</p><a href="${safe(result.download)}">Download progress CSV →</a></div>`;
+    $("#export-result").innerHTML = !result.id ? `<div class="result-card"><strong>No new actuals to export</strong><p>${safe(result.message)}</p></div>` : `<div class="result-card"><strong>Your export is ready</strong><p>${result.manifest.row_count} approved ${result.manifest.row_count === 1 ? "event" : "events"}, with source and approval references.</p><a href="${safe(result.download)}">Download progress CSV →</a>${result.xer_download ? `<p><a href="${safe(result.xer_download)}">Download updated XER →</a> · Parser round-trip passed; confirm import and recalculation in P6.</p>` : ""}<p><a href="${safe(result.changeset_download)}">Download validated change set →</a></p></div>`;
     toast(result.id ? "Export created." : "Repeated actuals grouped; no export needed.");
     await refresh();
   } catch (error) { toast(error.message, true); }
@@ -496,9 +496,22 @@ async function restoreTypedDraft() {
   if (draft.voiceSource) window.CarrickCapture.restoreVoiceSource(draft.voiceSource);
 }
 
+let serverRecoveryLoaded=0;
+async function renderServerRecovery(outbox,drafts) {
+  if(!offline.reachable || Date.now()-serverRecoveryLoaded<5000)return;
+  serverRecoveryLoaded=Date.now();
+  const [reports,captures]=await Promise.all([request("/api/submissions"),request("/api/captures/incomplete")]);
+  const local=new Set(outbox.map(item=>item.id));const localCaptures=new Set(drafts.map(item=>item.receipt?.capture_asset_id||item.failedAssetId));
+  $("#server-recovery-list").innerHTML=reports.filter(item=>!local.has(item.id)).map(item=>`<div class="device-report"><div><strong>Saved on server · ${safe(item.filename||"Field report")}</strong><small>${safe(item.id)} · Analysis needs attention</small></div><div class="device-report-actions"><button class="text-button" data-retry-server="${safe(item.id)}">Retry</button>${item.analysis_mode==="ai"?`<button class="text-button" data-standard-server="${safe(item.id)}">Use standard matching</button>`:""}<button class="text-button" data-download-server="${safe(item.id)}">Download source</button></div></div>`).join("")+captures.filter(item=>!localCaptures.has(item.capture_asset_id)).map(item=>`<div class="device-report"><div><strong>Saved original · ${safe(item.filename)}</strong><small>Capture needs retry or manual transcription</small></div><div class="device-report-actions"><a href="${safe(item.original_url)}" target="_blank" rel="noopener">Download original</a><button class="text-button" data-retry-capture="${safe(item.capture_asset_id)}">Retry capture</button><button class="text-button" data-open-source="${safe(item.capture_asset_id)}">Transcribe manually</button></div></div>`).join("");
+  $$("[data-retry-server], [data-standard-server]").forEach(button=>button.addEventListener("click",async()=>{button.disabled=true;try{await post(`/api/submissions/${button.dataset.retryServer||button.dataset.standardServer}/retry`,button.dataset.standardServer?{analysis_mode:"rules"}:{});serverRecoveryLoaded=0;await refresh();toast("Saved report recovered. Planner review is required.");}catch(error){toast(error.message,true);}finally{button.disabled=false;}}));
+  $$("[data-download-server]").forEach(button=>button.addEventListener("click",async()=>{try{const source=await request(`/api/submissions/${button.dataset.downloadServer}`);const url=URL.createObjectURL(new Blob([JSON.stringify(source.payload,null,2)],{type:"application/json"}));const link=document.createElement("a");link.href=url;link.download="carrick-retained-source.json";link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(error){toast(error.message,true);}}));
+  $$("[data-open-source]").forEach(button=>button.addEventListener("click",async()=>{button.disabled=true;try{await window.CarrickCapture.restoreServerCapture(await request(`/api/captures/${button.dataset.openSource}`));}catch(error){toast(error.message,true);}finally{button.disabled=false;}}));
+  $$("[data-retry-capture]").forEach(button=>button.addEventListener("click",async()=>{button.disabled=true;try{const receipt=await post(`/api/captures/${button.dataset.retryCapture}/retry`);await window.CarrickCapture.restoreServerCapture(receipt);serverRecoveryLoaded=0;}catch(error){toast(error.message,true);}finally{button.disabled=false;}}));
+}
 async function renderDeviceReports() {
   try {
     const [outbox, drafts] = await Promise.all([offline.list("outbox"), offline.list("drafts")]);
+    renderServerRecovery(outbox,drafts).catch(error=>{if(!error.transport)$("#server-recovery-list").textContent=error.message;});
     const banner = $("#connection-banner");
     banner.hidden = offline.reachable && outbox.length === 0;
     $("#connection-copy").textContent = !offline.reachable
@@ -508,9 +521,10 @@ async function renderDeviceReports() {
     $("#retry-outbox").disabled = !offline.reachable || offline.syncing;
     if (!state.processing) $("#report-form button[type=submit]").textContent = offline.reachable ? "Analyze report →" : "Save report offline";
     $("#device-reports-list").innerHTML = outbox.length || drafts.length
-      ? outbox.map(item => `<div class="device-report"><div><strong>${safe(item.payload.filename || item.payload.content?.slice(0, 90) || "Field report")}</strong><small>${safe({ pending: "Submitted offline · Waiting to sync", failed: "Submission needs attention", conflict: "Schedule changed · Review required" }[item.status])}</small>${item.error ? `<p class="capture-warning">${safe(item.error)}</p>` : ""}${item.payload.reviewed_pages ? `<details><summary>Reviewed document text</summary><p>${safe(item.payload.reviewed_pages.map(page => page.text).join("\n\n"))}</p></details>` : ""}</div><div class="device-report-actions">${item.status === "conflict" ? `<button class="text-button" data-rebind-report="${safe(item.id)}" ${!offline.reachable ? "disabled" : ""}>Review with current schedule</button>` : ""}<button class="text-button" data-download-report="${safe(item.id)}">Download copy</button><button class="text-button" data-remove-report="${safe(item.id)}">Discard</button></div></div>`).join("")
+      ? outbox.map(item => `<div class="device-report"><div><strong>${safe(item.payload.filename || item.payload.content?.slice(0, 90) || "Field report")}</strong><small>${safe({ pending: "Submitted offline · Waiting to sync", failed: "Submission needs attention", conflict: "Schedule changed · Review required" }[item.status])}</small>${item.error ? `<p class="capture-warning">${safe(item.error)}</p>` : ""}${item.payload.reviewed_pages ? `<details><summary>Reviewed document text</summary><p>${safe(item.payload.reviewed_pages.map(page => page.text).join("\n\n"))}</p></details>` : ""}</div><div class="device-report-actions">${item.status === "conflict" ? `<button class="text-button" data-rebind-report="${safe(item.id)}" ${!offline.reachable ? "disabled" : ""}>Review with current schedule</button>` : ""}${item.payload.analysis_mode === "ai" && item.error ? `<button class="text-button" data-fallback-report="${safe(item.id)}" ${!offline.reachable?"disabled":""}>Use standard matching</button>` : ""}<button class="text-button" data-download-report="${safe(item.id)}">Download copy</button><button class="text-button" data-remove-report="${safe(item.id)}">Discard</button></div></div>`).join("")
         + drafts.map(draft => `<div class="device-report"><div><strong>${safe(draft.filename)}</strong><small>${draft.kind === "voice" ? "Voice recording" : "Document"} · ${draft.receipt ? "Ready for your review" : "Saved for local extraction"}</small></div><div class="device-report-actions"><button class="text-button" data-open-draft="${safe(draft.id)}">${draft.receipt ? "Review" : draft.kind === "voice" ? "Open recording" : "Extract text"}</button><button class="text-button" data-download-draft="${safe(draft.id)}">Download copy</button><button class="text-button" data-remove-draft="${safe(draft.id)}">Discard</button></div></div>`).join("")
       : '<p class="muted">No reports or attachments waiting on this device.</p>';
+    $$("[data-fallback-report]").forEach(button=>button.addEventListener("click",()=>offline.fallbackRules(button.dataset.fallbackReport).catch(error=>toast(error.message,true))));
     const download = (blob, filename) => {
       const url = URL.createObjectURL(blob), link = document.createElement("a");
       link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -596,6 +610,8 @@ function bind() {
 
 window.CarrickCapture.init({ post, toast, refresh, go, offline, getSchedule: () => state.summary?.schedule?.id, isAi: () => $("#ai-mode").checked });
 window.CarrickAnalytics.init({ post, request, toast, offline, date: displayDate });
+async function startWorkspace() {
+await window.CarrickAuth.start();
 bind();
 setNavigation(false);
 go(labels[location.hash.slice(1)] ? location.hash.slice(1) : "overview", false);
@@ -603,3 +619,6 @@ refreshAiStatus().catch(() => $("#ai-status").textContent = "AI availability cou
 refreshCaptureStatus().catch(() => $("#capture-engine-status").textContent = "Connect to the local server to check scan extraction availability.");
 refresh().catch(error => toast(error.message, true));
 restoreTypedDraft().catch(error => toast(error.message, true));
+
+}
+startWorkspace().catch(error=>toast(error.message,true));

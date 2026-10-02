@@ -2,7 +2,7 @@
 
 Carrick turns field progress reports into traceable proposals for updating an infrastructure project schedule. Supervisors can describe work in familiar language; planners retain control over uncertain matches and exported schedule changes.
 
-This repository contains a runnable local prototype and the design documentation. It supports XER or CSV schedule import, typed notes, CSV logs, text/email/PDF reports, planner decisions, and an approved progress CSV export. An optional AI path retrieves activities from the imported schedule, extracts structured events, and reranks existing TASK IDs. It also includes scan OCR, local handwriting and speech adapters, browser microphone capture, saved offline reports, local Ollama RAG, and dependency-based schedule scenarios. These additions need the setup described below; they have not been tested in this session. Native schedule-file output remains planned work.
+This repository contains a runnable application and its design documentation. It supports project accounts, supervisor/planner roles, XER or CSV schedule import, typed notes, logs, document and voice capture, planner decisions, and approved progress exports. Optional cloud or local RAG retrieves imported activities and proposes existing TASK IDs. Updated XER output preserves schedule structure and passes a parser round trip; a validated change set is also available. Independent Oracle P6 import remains an external acceptance check. OCR, handwriting, speech, and local AI require separately provisioned engines.
 
 ## Run locally
 
@@ -12,7 +12,7 @@ Requires Python 3.11 or newer. Basic text and CSV workflows need no package inst
 python3 -m services.api.app
 ```
 
-Open `http://127.0.0.1:8765` for the interactive introduction, or go to `http://127.0.0.1:8765/app` for the workspace. The introduction previews matching against a synthetic schedule without saving notes. In the workspace, select **Load sample project**, capture a field update, review it, and create an export. The local SQLite database is stored under `data/private/` and ignored by Git. The server binds to localhost by default and has no production authentication; do not expose it publicly.
+Open `http://127.0.0.1:8765` for the interactive introduction, or go to `http://127.0.0.1:8765/app` for the workspace. The introduction previews matching against a synthetic schedule without saving notes. On first use, create your owner account in the workspace. Existing local schedules and reports belong to that owner’s initial project. Select **Load sample project**, capture a field update, review it, and create an export. Use **Project access** to add supervisor or planner accounts. SQLite, source files, and backups remain under ignored `data/private/`. The server binds to localhost; shared hosting requires the HTTPS configuration described in [access, output, and recovery](docs/architecture/access-output-recovery.md).
 
 ## Enable AI analysis
 
@@ -48,13 +48,17 @@ The workspace adds editable OCR page previews, microphone recording and transcri
 
 See [capture and offline setup](docs/architecture/capture-offline-analytics.md) for package installation, local model provisioning, supported inputs, data storage, API contracts, and forecasting assumptions. `.env.example` includes the local model settings. After provisioning, start the local AI profile with `.venv/bin/python -m scripts.run_offline`. Standard matching and analytics do not require an LLM.
 
-Restart the Python server after updating these files so new endpoints and database migrations load. No tests, browser automation, model downloads, or inference were run for these additions.
+Restart the Python server after updates so endpoints and additive migrations load. Regression and browser suites exercise capture with deterministic OCR/speech/AI adapters and Chrome’s fake microphone device. They do not measure real engine accuracy or performance. See [verification suites](tests/README.md).
 
 ## Report reliability and evaluation
 
 Exact repeat reports retain their sources in one group without repeat inference. Similar wording is flagged for review. Date conflicts, competing claims, all four dependency types, lags, missing actuals, graph cycles, and stale schedule decisions are checked again before approval/export. Progress history adds activity, discipline, status, date, and source filters, pagination, grouped source evidence, and decision details.
 
 The repository includes independent-label export, accuracy/coverage/latency/cost evaluation, and guarded routing-policy calibration. These tools have not been run for this change; no production performance or calibrated-threshold result is claimed. A larger independently reviewed dataset is still required. See [reliability and calibration setup](docs/quality/reliability-and-calibration.md). `.env.example` adds optional `CARRICK_ROUTING_POLICY`; leave it blank until a validated artifact exists. Restart the local API to apply the additive schema changes.
+
+## Access and recovery
+
+Project membership is enforced on the API, including source downloads, approvals, imports, and exports. Supervisors submit reports; planners approve schedule actuals. Accepted report payloads and capture originals are retained before inference. Saved reports support bounded retries and explicit standard-matching fallback; failed captures support manual transcription. Device storage is separated by account and project. See [access, output, and recovery](docs/architecture/access-output-recovery.md).
 
 ## Intended product loop
 

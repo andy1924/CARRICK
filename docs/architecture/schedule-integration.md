@@ -1,6 +1,6 @@
 # Schedule integration boundary
 
-**Implementation status:** XER and schedule CSV import work in the local prototype. Approved field events can be exported as a progress CSV with source references. Native schedule-file updates and controlled import validation are not implemented yet.
+**Implementation status:** XER/CSV import, approved progress CSV, constrained updated XER, and validated JSON change sets are implemented. XER output is checked with a field diff and parser reimport; independent Oracle P6 acceptance has not been run.
 
 ## Import
 
@@ -25,15 +25,17 @@ An approved proposal targets one imported schedule version and one activity. The
 
 ## Export gate
 
-An updated XER is produced only if all of these checks pass:
+The application offers an updated XER only when these internal checks pass:
 
 1. The output parses again with the same supported parser.
 2. Project, WBS, activity, and relationship counts match the imported version unless an approved feature explicitly changes them.
 3. The diff contains only approved target fields and expected metadata.
-4. Every exported actual traces to a reviewed or safely staged proposal and a source report.
-5. The file passes an independent viewer or controlled application import using the same synthetic fixture.
+4. Every exported actual traces to an explicit planner approval and a source report.
+5. No completed activity lacks an actual start. Finish-only evidence is retained in the change set without inventing a start.
 
-If the final check cannot be performed, the product offers a validated change-set export and labels XER compatibility as unverified. Never describe parser success alone as proof of safe import into an enterprise database.
+The exported manifest labels Oracle compatibility as unverified. Before importing into a master schedule, a planner must validate the output in a controlled P6 project and inspect its recalculation. The JSON change set remains available when native output is withheld or an independent import cannot be performed. Parser success is not proof of safe enterprise import.
+
+The writer changes approved TASK actual dates, activity status, and remaining duration (to zero for a completed activity when the column exists). It retains imported TASK IDs, TASKPRED, baseline dates, calendars, and other table records. New day-precision dates serialize at 00:00; existing timestamps are retained. Partial progress and resource updates are outside this boundary. See [output details](access-output-recovery.md#schedule-output).
 
 ## Import into the system of record
 

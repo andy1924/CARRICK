@@ -16,6 +16,11 @@ FIXTURE = Path(__file__).resolve().parents[1] / "data" / "samples" / "pump-stati
 
 
 class EngineTests(unittest.TestCase):
+    def test_public_preview_is_grounded_in_synthetic_schedule(self):
+        result=app.preview_report({"content":"Started welding today"})
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["events"][0]["status"],"needs_review")
+        with self.assertRaisesRegex(ValueError,"1,000"): app.preview_report({"content":"a"*1001})
     def test_schedule_and_ambiguous_matching(self):
         activities, relationships, kind = parse_schedule(FIXTURE.read_text(), FIXTURE.name)
         self.assertEqual((kind, len(activities), len(relationships)), ("xer", 12, 7))
@@ -62,32 +67,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(rows, [{"text": "North pipeline welding started today", "source_row": 1}])
 
 
-class FakeAIClient:
-    embedding_model = "fake-embedding"
-    model = "fake-structured-model"
-
-    def embed(self, texts):
-        return [[float("north" in text.lower()), float("pump" in text.lower()), 1.0] for text in texts]
-
-    def structured(self, name, instructions, data, schema):
-        if name == "field_events":
-            return {"events": [{"quote": data["report"], "kind": "actual_start", "event_date": "2026-10-01",
-                                "discipline": "piping", "location": ""}]}
-        if "Clarification from site: north" in data["field_event"]:
-            return {"ranked_ids": ["NEW-999", "PI-301", "PI-302"], "ambiguous": False,
-                    "reason": "North matches the pipeline location", "clarification_question": ""}
-        return {"ranked_ids": ["NEW-999", "PI-301", "PI-302"], "ambiguous": True,
-                "reason": "Both pipeline welds fit the note", "clarification_question": "North or south pipeline?"}
-
-    def test_public_preview_uses_sample_without_writing_data(self):
-        result = app.preview_report({"content": "Started welding today"})
-        self.assertFalse(result["saved"])
-        self.assertEqual(result["events"][0]["status"], "needs_review")
-        self.assertEqual({candidate["activity_id"] for candidate in result["events"][0]["candidates"][:2]},
-                         {"PI-301", "PI-302"})
-        with self.assertRaisesRegex(ValueError, "1,000"):
-            app.preview_report({"content": "a" * 1001})
-
+from tests.fakes import FakeAIClient
 
 class FlowTests(unittest.TestCase):
     def setUp(self):
@@ -115,7 +95,7 @@ class FlowTests(unittest.TestCase):
         app.decide_event(first["id"], {"action": "approve", "activity_id": "CV-102", "event_date": "2026-10-01"})
         output = app.build_export()
         self.assertEqual(output["manifest"]["row_count"], 1)
-        with app.connection() as db:
+        with app.db_session() as db:
             exported = db.execute("SELECT content FROM exports WHERE id=?", (output["id"],)).fetchone()[0]
             source = db.execute("SELECT content FROM schedule_versions WHERE id=?", (self.schedule["id"],)).fetchone()[0]
         self.assertIn("CV-102,actual_finish,2026-10-01", exported)
@@ -129,7 +109,7 @@ class FlowTests(unittest.TestCase):
             "content": "report_text,event_date,discipline,location\nNorth pipeline welding started,2026-10-01,piping,north\n",
         })
         self.assertEqual(len(report["events"]), 1)
-        with app.connection() as db:
+        with app.db_session() as db:
             row = db.execute("SELECT source_row FROM events WHERE id=?", (report["events"][0]["id"],)).fetchone()
         self.assertEqual(row["source_row"], 2)
 
@@ -138,7 +118,7 @@ class FlowTests(unittest.TestCase):
         event = report["events"][0]
         self.assertEqual(event["kind"], "actual_finish")
         self.assertIn("Actual start is not recorded", event["warnings"])
-        with app.connection() as db:
+        with app.db_session() as db:
             activity = db.execute("SELECT actual_start FROM activities WHERE external_id='ME-202'").fetchone()
         self.assertFalse(activity["actual_start"])
 
@@ -153,7 +133,7 @@ class FlowTests(unittest.TestCase):
             app.build_export()
 
     def test_ai_retrieval_review_and_clarification_keep_source_auditable(self):
-        with patch.object(app, "OpenAIClient", FakeAIClient), patch.object(app, "ai_status", return_value={"available": True, "reranker": "llm"}):
+        with patch.object(app, "model_client", FakeAIClient), patch.object(app, "ai_status", return_value={"available": True, "reranker": "llm"}), patch("urllib.request.urlopen", side_effect=AssertionError("Tests must not use the internet")):
             report = app.submit_report({"source_kind": "text", "analysis_mode": "ai",
                                         "content": "Started welding today", "event_date": "2026-10-01"})
             event = report["events"][0]
@@ -164,7 +144,7 @@ class FlowTests(unittest.TestCase):
             refined = app.clarify_event(event["id"], "north")
         self.assertEqual(refined["candidates"][0]["activity_id"], "PI-301")
         self.assertFalse(refined["clarification_question"])
-        with app.connection() as db:
+        with app.db_session() as db:
             saved = db.execute("SELECT analysis_mode, model_name, clarification_answer FROM events WHERE id=?", (event["id"],)).fetchone()
             audit = db.execute("SELECT action FROM audit WHERE event_id=?", (event["id"],)).fetchone()
             indexed = db.execute("SELECT count(*) FROM activity_embeddings").fetchone()[0]

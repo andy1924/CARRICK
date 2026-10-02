@@ -1,0 +1,6 @@
+{
+  "name": "carrick-workspace",
+  "private": true,
+  "scripts": {"test:e2e": "playwright test", "test": "python3 -m unittest discover -s tests -v"},
+  "devDependencies": {"playwright": "1.62.1"}
+}

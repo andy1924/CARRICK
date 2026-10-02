@@ -160,3 +160,7 @@ label { display:block; font-size:12px; font-weight:550; color:#65748c; margin-bo
 .quality-values dt{font-size:12px;color:var(--muted,#64748b)}.quality-values dd{font-size:22px;margin:8px 0}
 @media(max-width:1000px){.history-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.quality-values{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:520px){.history-filters{grid-template-columns:1fr;padding:16px}.history-wide{grid-column:span 1}.history-group h2{flex-direction:column;padding:14px 16px}.history-evidence{padding:0 16px 16px}.history-toolbar,.history-pagination{padding:16px;flex-wrap:wrap}}
+
+[hidden]{display:none!important}
+.auth-panel{max-width:420px;margin:9vh auto;padding:32px;border:1px solid #e2e6ed;background:white;border-radius:12px}.auth-panel h1{margin-top:32px;font-size:28px}.auth-panel label,.access-dialog label{display:block;margin:16px 0}.auth-panel input,.access-dialog input,.access-dialog select{width:100%;margin-top:8px}.auth-panel button{width:100%}#auth-message{color:#b42318;font-size:13px}
+.access-dialog{width:min(600px,90vw);max-height:85vh;overflow:auto;border:1px solid #e2e6ed;border-radius:12px;padding:28px}.access-dialog::backdrop{background:#17233c80}.top-actions{flex-wrap:wrap}.top-actions #project-select{max-width:150px;font-size:12px}.top-actions #account-name,.top-actions #account-role{font-size:11px}body[data-role="supervisor"] #import-schedule,body[data-role="supervisor"] #load-demo{display:none}#account-role{text-transform:capitalize}
